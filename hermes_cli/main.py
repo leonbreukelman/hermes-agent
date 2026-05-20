@@ -8186,7 +8186,15 @@ class _UpdateOutputStream:
         return getattr(self._original, name)
 
 
-def _install_hangup_protection(gateway_mode: bool = False):
+# Bind the stream class as a default so stale references to this helper remain
+# coherent if tests reload hermes_cli.main after importing the function. Without
+# the binding, the old function would look up a newly-redefined class in module
+# globals and produce wrapper instances that fail isinstance() checks against the
+# class imported alongside the function.
+def _install_hangup_protection(
+    gateway_mode: bool = False,
+    _stream_cls=_UpdateOutputStream,
+):
     """Protect ``cmd_update`` from SIGHUP and broken terminal pipes.
 
     Users commonly run ``hermes update`` in an SSH session or a terminal
@@ -8256,8 +8264,8 @@ def _install_hangup_protection(gateway_mode: bool = False):
         )
 
         state["log_file"] = log_file
-        sys.stdout = _UpdateOutputStream(state["prev_stdout"], log_file)
-        sys.stderr = _UpdateOutputStream(state["prev_stderr"], log_file)
+        sys.stdout = _stream_cls(state["prev_stdout"], log_file)
+        sys.stderr = _stream_cls(state["prev_stderr"], log_file)
         state["installed"] = True
     except Exception:
         # Leave stdio untouched on any setup failure.  Update continues

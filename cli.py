@@ -7216,6 +7216,8 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    acp_command=getattr(result, "acp_command", None),
+                    acp_args=getattr(result, "acp_args", []),
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -7447,6 +7449,8 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    acp_command=getattr(result, "acp_command", None),
+                    acp_args=getattr(result, "acp_args", []),
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")

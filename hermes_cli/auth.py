@@ -106,6 +106,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_CLAUDE_CODE_BASE_URL = "claude-code://local"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -236,6 +237,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "claude-code": ProviderConfig(
+        id="claude-code",
+        name="Claude Code",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_CLAUDE_CODE_BASE_URL,
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1416,7 +1423,7 @@ def resolve_provider(
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
-        "claude": "anthropic", "claude-code": "anthropic",
+        "claude": "anthropic", "claude-code": "claude-code",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
@@ -5662,11 +5669,66 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
-def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for providers that run a local subprocess."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "external_process":
-        return {"configured": False}
+def _safe_external_process_error_text(value: Any, *, limit: int = 300) -> str:
+    """Redact and bound external-process diagnostics before user display."""
+    try:
+        from agent.transports.claude_code import ClaudeCodeTransport
+
+        return ClaudeCodeTransport._redacted_preview(value, limit=limit)
+    except Exception:
+        text = "" if value is None else str(value)
+        if len(text) > limit:
+            text = f"{text[:limit]}...[truncated]"
+        try:
+            from agent.redact import redact_sensitive_text
+
+            text = redact_sensitive_text(text, force=True).replace("***", "[REDACTED]")
+        except Exception:
+            pass
+        return text
+
+
+def _resolve_external_process_executable(command: str) -> Optional[str]:
+    """Resolve a local command without reading provider credential files."""
+    command = (command or "").strip()
+    if not command:
+        return None
+    resolved = shutil.which(command)
+    if resolved:
+        return resolved
+    if os.path.exists(command):
+        return command
+    return None
+
+
+def _resolve_claude_code_command() -> str:
+    """Mirror ClaudeCodeTransport command resolution without credential I/O."""
+    explicit = os.getenv("HERMES_CLAUDE_CODE_COMMAND", "").strip()
+    if explicit:
+        return explicit
+    legacy = os.getenv("CLAUDE_CODE_CLI_PATH", "").strip()
+    if legacy:
+        return legacy
+    path_command = shutil.which("claude")
+    if path_command:
+        return path_command
+    return "claude"
+
+
+def _external_process_runtime_parts(
+    provider_id: str,
+    pconfig: ProviderConfig,
+) -> tuple[str, list[str], str, Optional[str], bool]:
+    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if not base_url:
+        base_url = pconfig.inference_base_url
+
+    if provider_id == "claude-code":
+        command = _resolve_claude_code_command()
+        args: list[str] = []
+        resolved_command = _resolve_external_process_executable(command)
+        configured = bool(resolved_command)
+        return command, args, base_url, resolved_command, configured
 
     command = (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
@@ -5675,20 +5737,28 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     )
     raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
     args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
+    resolved_command = _resolve_external_process_executable(command)
+    configured = bool(resolved_command or base_url.startswith("acp+tcp://"))
+    return command, args, base_url, resolved_command, configured
 
-    resolved_command = shutil.which(command) if command else None
+
+def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
+    """Status snapshot for providers that run a local subprocess."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "external_process":
+        return {"configured": False}
+
+    command, args, base_url, resolved_command, configured = _external_process_runtime_parts(provider_id, pconfig)
+    runtime_command = (resolved_command or command) if provider_id == "claude-code" else command
     return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "configured": configured,
         "provider": provider_id,
         "name": pconfig.name,
-        "command": command,
+        "command": runtime_command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "logged_in": configured,
     }
 
 
@@ -5711,7 +5781,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    if target in {"copilot-acp", "claude-code"}:
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -5861,21 +5931,20 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    resolved_command = shutil.which(command) if command else None
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
+    command, args, base_url, resolved_command, configured = _external_process_runtime_parts(provider_id, pconfig)
+    if not configured:
+        if provider_id == "claude-code":
+            safe_command = _safe_external_process_error_text(command, limit=180)
+            raise AuthError(
+                "Could not find the Claude Code CLI command "
+                f"'{safe_command}'. Set HERMES_CLAUDE_CODE_COMMAND or "
+                "CLAUDE_CODE_CLI_PATH, or install `claude` on PATH.",
+                provider=provider_id,
+                code="missing_claude_code_cli",
+            )
+        safe_command = _safe_external_process_error_text(command, limit=180)
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
+            f"Could not find the Copilot CLI command '{safe_command}'. "
             "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
             provider=provider_id,
             code="missing_copilot_cli",
@@ -5883,7 +5952,7 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": "" if provider_id == "claude-code" else "copilot-acp",
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

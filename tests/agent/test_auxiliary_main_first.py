@@ -119,6 +119,27 @@ class TestResolveAutoMainFirst:
         assert client is chain_client
         assert model == "google/gemini-3-flash-preview"
 
+    def test_claude_code_main_skips_unsupported_aux_and_uses_chain(self, monkeypatch):
+        """Claude Code main provider must not become an Anthropic aux request."""
+        chain_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="claude-code",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="opus",
+        ), patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            side_effect=AssertionError("claude-code aux should not resolve CLI credentials"),
+        ), patch(
+            "agent.auxiliary_client._get_provider_chain",
+            return_value=[("openrouter", lambda: (chain_client, "google/gemini-3-flash-preview"))],
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto()
+
+        assert client is chain_client
+        assert model == "google/gemini-3-flash-preview"
+
     def test_no_main_config_uses_chain_directly(self):
         """No main provider configured → skip step 1, use chain (no regression)."""
         chain_client = MagicMock()

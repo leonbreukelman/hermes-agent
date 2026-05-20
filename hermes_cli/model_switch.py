@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
@@ -277,6 +277,8 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    acp_command: Optional[str] = None
+    acp_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -858,6 +860,8 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    acp_command: Optional[str] = None
+    acp_args: list[str] = []
 
     if provider_changed or explicit_provider:
         try:
@@ -868,6 +872,8 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            acp_command = runtime.get("command") or None
+            acp_args = list(runtime.get("args") or [])
         except Exception as e:
             return ModelSwitchResult(
                 success=False,
@@ -892,8 +898,14 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            acp_command = runtime.get("command") or None
+            acp_args = list(runtime.get("args") or [])
         except Exception:
             pass
+
+    if target_provider not in {"claude-code", "copilot-acp"}:
+        acp_command = None
+        acp_args = []
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
@@ -1037,6 +1049,8 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        acp_command=acp_command,
+        acp_args=acp_args,
     )
 
 
@@ -1268,7 +1282,7 @@ def list_authenticated_providers(
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
-    from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
+    from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry, get_external_process_provider_status
 
     # Build reverse mapping: models.dev ID → Hermes provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
@@ -1288,6 +1302,12 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.auth_type == "external_process":
+            try:
+                _ext_status = get_external_process_provider_status(hermes_slug)
+                has_creds = bool(_ext_status.get("configured") or _ext_status.get("logged_in"))
+            except Exception as exc:
+                logger.debug("External-process status check failed for %s: %s", hermes_slug, exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
@@ -1428,6 +1448,13 @@ def list_authenticated_providers(
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
+
+        if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "external_process":
+            try:
+                _cp_ext_status = get_external_process_provider_status(_cp.slug)
+                _cp_has_creds = bool(_cp_ext_status.get("configured") or _cp_ext_status.get("logged_in"))
+            except Exception:
+                pass
 
         if not _cp_has_creds:
             continue
