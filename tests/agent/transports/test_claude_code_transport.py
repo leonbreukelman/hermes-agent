@@ -464,6 +464,26 @@ def test_timeout_terminates_claude_child_process(monkeypatch):
     assert len(message) < 1200
 
 
+def test_force_kill_falls_back_when_sigkill_is_unavailable(monkeypatch):
+    transport = get_transport("claude_code")
+    assert transport is not None
+    process = _FakePopen(wait_times_out=True)
+    killpg_calls = []
+
+    monkeypatch.setattr(claude_code_module.os, "getpgid", lambda pid: 9003)
+    monkeypatch.setattr(
+        claude_code_module.os,
+        "killpg",
+        lambda pgid, sig: killpg_calls.append((pgid, sig)),
+    )
+    monkeypatch.delattr(claude_code_module.signal, "SIGKILL", raising=False)
+
+    transport._terminate_child_process(process, force_kill=True)
+
+    assert killpg_calls == [(9003, signal.SIGTERM)]
+    assert process.kill_calls == 1
+
+
 def test_cancellation_terminates_claude_child_process(monkeypatch):
     transport = get_transport("claude_code")
     process = _FakePopen(timeout_count=3, wait_times_out=False)
@@ -556,6 +576,30 @@ def test_subprocess_does_not_inherit_anthropic_credentials(monkeypatch):
     assert "ANTHROPIC_BASE_URL" not in child_env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
     assert secret not in child_env.values()
+
+
+def test_child_env_preserves_windows_bootstrap_vars_without_anthropic_credentials(monkeypatch):
+    monkeypatch.setenv("SystemRoot", r"C:\\Windows")
+    monkeypatch.setenv("SystemDrive", "C:")
+    monkeypatch.setenv("WINDIR", r"C:\\Windows")
+    monkeypatch.setenv("COMSPEC", r"C:\\Windows\\System32\\cmd.exe")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("TEMP", r"C:\\Temp")
+    monkeypatch.setenv("TMP", r"C:\\Tmp")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-" + "w" * 30)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-should-not-pass")
+
+    child_env = claude_code_module.ClaudeCodeTransport._build_child_env()
+
+    assert child_env["SystemRoot"] == r"C:\\Windows"
+    assert child_env["SystemDrive"] == "C:"
+    assert child_env["WINDIR"] == r"C:\\Windows"
+    assert child_env["COMSPEC"].endswith("cmd.exe")
+    assert child_env["PATHEXT"] == ".COM;.EXE;.BAT;.CMD"
+    assert child_env["TEMP"] == r"C:\\Temp"
+    assert child_env["TMP"] == r"C:\\Tmp"
+    assert "ANTHROPIC_API_KEY" not in child_env
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
 
 
 def test_transport_opens_no_credential_files(monkeypatch):

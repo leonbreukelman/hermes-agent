@@ -74,6 +74,27 @@ def test_claude_code_api_mode_is_external_cli_mode():
     assert determine_api_mode("claude-code", "claude-code://local") == "claude_code"
 
 
+def test_external_process_error_redaction_does_not_import_transport(monkeypatch):
+    import_attempts = []
+    real_import = builtins.__import__
+
+    def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "agent.transports.claude_code":
+            import_attempts.append(name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", tracking_import)
+
+    text = auth_module._safe_external_process_error_text(
+        "token sk-ant-" + "z" * 30,
+        limit=180,
+    )
+
+    assert import_attempts == []
+    assert "sk-ant-" not in text
+    assert "[REDACTED]" in text
+
+
 def test_claude_code_runtime_provider_uses_external_process_without_api_key(monkeypatch):
     monkeypatch.setenv("HERMES_CLAUDE_CODE_COMMAND", "/tmp/claude")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-used-by-claude-code")

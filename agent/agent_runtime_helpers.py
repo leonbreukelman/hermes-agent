@@ -1369,6 +1369,11 @@ def switch_model(
     if base_url:
         agent.base_url = base_url
     agent.api_mode = api_mode
+    if api_mode == "claude_code":
+        # Claude Code takes only a command override.  Ignore generic ACP args so
+        # callers cannot inject extra Claude CLI switches beyond Hermes' fixed,
+        # safety-bounded command template.
+        agent.acp_args = []
     # Invalidate transport cache — new api_mode may need a different transport
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()

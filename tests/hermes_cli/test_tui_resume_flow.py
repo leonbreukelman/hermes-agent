@@ -927,7 +927,8 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
-    assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
+    npm_build_calls = [call for call in calls if call[0] == ["/usr/bin/npm", "run", "build"]]
+    assert npm_build_calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
 
 
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):

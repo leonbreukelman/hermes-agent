@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import shlex
 import ssl
@@ -5669,23 +5670,40 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+_EXTERNAL_PROCESS_CREDENTIAL_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"sk-[A-Za-z0-9_-]{10,}|"
+    r"ghp_[A-Za-z0-9]{10,}|"
+    r"github_pat_[A-Za-z0-9_]{10,}|"
+    r"gh[ousr]_[A-Za-z0-9]{10,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AIza[A-Za-z0-9_-]{30,}|"
+    r"hf_[A-Za-z0-9]{10,}|"
+    r"pplx-[A-Za-z0-9]{10,}|"
+    r"gsk_[A-Za-z0-9]{10,}|"
+    r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}"
+    r")(?![A-Za-z0-9])"
+)
+
+
 def _safe_external_process_error_text(value: Any, *, limit: int = 300) -> str:
-    """Redact and bound external-process diagnostics before user display."""
+    """Redact and bound external-process diagnostics before user display.
+
+    Keep this helper local to hermes_cli.auth.  Auth/status code must not import
+    transport modules just to redact an error path; those imports add a CLI ↔
+    agent transport coupling and can fail before auth diagnostics render.
+    """
+    text = "" if value is None else str(value)
+    if len(text) > limit:
+        text = f"{text[:limit]}...[truncated]"
+    text = _EXTERNAL_PROCESS_CREDENTIAL_RE.sub("[REDACTED]", text)
     try:
-        from agent.transports.claude_code import ClaudeCodeTransport
+        from agent.redact import redact_sensitive_text
 
-        return ClaudeCodeTransport._redacted_preview(value, limit=limit)
+        text = redact_sensitive_text(text, force=True).replace("***", "[REDACTED]")
     except Exception:
-        text = "" if value is None else str(value)
-        if len(text) > limit:
-            text = f"{text[:limit]}...[truncated]"
-        try:
-            from agent.redact import redact_sensitive_text
-
-            text = redact_sensitive_text(text, force=True).replace("***", "[REDACTED]")
-        except Exception:
-            pass
-        return text
+        pass
+    return text
 
 
 def _resolve_external_process_executable(command: str) -> Optional[str]:

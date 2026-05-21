@@ -325,6 +325,13 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    if agent.api_mode == "claude_code":
+        # Claude Code support intentionally only accepts an executable path.
+        # Do not carry generic ACP args into the Claude CLI invocation: Hermes
+        # builds a fixed, safety-bounded command line that disables slash
+        # commands and Claude-owned tools.
+        agent.acp_args = []
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:

@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
@@ -57,6 +59,49 @@ def test_claude_code_agent_initializes_without_openai_or_anthropic_client(monkey
         "--tools",
         "",
     ]
+
+
+def test_claude_code_build_api_kwargs_raises_when_transport_missing(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="opus",
+        provider="claude-code",
+        api_mode="claude_code",
+        base_url="claude-code://local",
+        api_key="",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    monkeypatch.setattr(agent, "_get_transport", lambda api_mode=None: None)
+
+    with pytest.raises(RuntimeError, match="Claude Code transport is not registered"):
+        agent._build_api_kwargs([{"role": "user", "content": "hello"}])
+
+
+def test_claude_code_init_ignores_acp_args_but_preserves_command(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="opus",
+        provider="claude-code",
+        api_mode="claude_code",
+        base_url="claude-code://local",
+        api_key="",
+        acp_command="/tmp/claude",
+        acp_args=["--dangerous-extra-arg"],
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent.acp_command == "/tmp/claude"
+    assert agent.acp_args == []
+    assert agent._client_kwargs["command"] == "/tmp/claude"
+    assert agent._client_kwargs["args"] == []
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hello"}])
+    assert "--dangerous-extra-arg" not in kwargs["command"]
 
 
 def test_claude_code_agent_calls_transport_not_sdk_clients(monkeypatch):
@@ -273,7 +318,7 @@ def test_switch_model_to_claude_code_preserves_command_metadata(monkeypatch):
         base_url="claude-code://local",
         api_mode="claude_code",
         acp_command="/tmp/claude",
-        acp_args=[],
+        acp_args=["--dangerous-extra-arg"],
     )
 
     assert agent.provider == "claude-code"

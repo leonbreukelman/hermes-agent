@@ -617,7 +617,17 @@ class ClaudeCodeTransport(ProviderTransport):
             if not force_kill:
                 return
 
-        _send(signal.SIGKILL)
+        kill_signal = getattr(signal, "SIGKILL", None)
+        if kill_signal is not None:
+            _send(kill_signal)
+        else:
+            # Windows does not expose SIGKILL.  For a forced shutdown still use
+            # the subprocess API's hard-kill primitive instead of issuing a
+            # second terminate/SIGTERM that may leave the CLI running.
+            try:
+                process.kill()
+            except Exception:
+                pass
         try:
             process.wait(timeout=1.0)
         except Exception:
@@ -862,6 +872,27 @@ class ClaudeCodeTransport(ProviderTransport):
             "SHELL",
             "TMPDIR",
             "SSH_AUTH_SOCK",
+            # Windows process bootstrap variables.  Without these, subprocesses
+            # launched under a restricted allowlist can fail before Claude Code
+            # starts (for example cmd/PATH/PATHEXT resolution and temp dirs).
+            "APPDATA",
+            "COMSPEC",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOCALAPPDATA",
+            "PATHEXT",
+            "PROGRAMDATA",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+            "SystemDrive",
+            "SYSTEMDRIVE",
+            "SystemRoot",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "WINDIR",
+            "windir",
         }
         blocked_names = {
             "ANTHROPIC_API_KEY",

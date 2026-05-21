@@ -293,6 +293,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     if agent.api_mode == "claude_code":
         _transport = agent._get_transport("claude_code")
+        if _transport is None:
+            raise RuntimeError("Claude Code transport is not registered")
         return _transport.build_kwargs(
             model=agent.model,
             messages=api_messages,
