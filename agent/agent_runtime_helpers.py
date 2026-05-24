@@ -1299,7 +1299,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    *,
+    acp_command=None,
+    acp_args=None,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -1318,6 +1328,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Determine api_mode if not provided ──
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url)
+    if new_provider == "claude-code":
+        api_mode = "claude_code"
+        base_url = base_url or "claude-code://local"
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -1334,6 +1347,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    if acp_command is not None or acp_args is not None:
+        agent.acp_command = acp_command
+        agent.acp_args = list(acp_args or [])
+    elif old_provider == "claude-code" and new_provider != "claude-code":
+        agent.acp_command = None
+        agent.acp_args = []
 
     # Clear the per-config context_length override so the new model's
     # actual context window is resolved via get_model_context_length()
@@ -1351,14 +1370,34 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     if base_url:
         agent.base_url = base_url
     agent.api_mode = api_mode
+    if api_mode == "claude_code":
+        # Claude Code takes only a command override.  Ignore generic ACP args so
+        # callers cannot inject extra Claude CLI switches beyond Hermes' fixed,
+        # safety-bounded command template.
+        agent.acp_args = []
     # Invalidate transport cache — new api_mode may need a different transport
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    if api_key:
+    if api_mode == "claude_code":
+        agent.api_key = ""
+    elif api_key:
         agent.api_key = api_key
 
     # ── Build new client ──
-    if api_mode == "anthropic_messages":
+    if api_mode == "claude_code":
+        agent.api_key = ""
+        agent._anthropic_api_key = ""
+        agent._anthropic_base_url = None
+        agent._is_anthropic_oauth = False
+        agent._anthropic_client = None
+        agent.client = None
+        agent._client_kwargs = {
+            "api_key": "",
+            "base_url": agent.base_url or "claude-code://local",
+            "command": getattr(agent, "acp_command", None),
+            "args": list(getattr(agent, "acp_args", []) or []),
+        }
+    elif api_mode == "anthropic_messages":
         from agent.anthropic_adapter import (
             build_anthropic_client,
             resolve_anthropic_token,
@@ -1472,6 +1511,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "acp_command": getattr(agent, "acp_command", None),
+        "acp_args": list(getattr(agent, "acp_args", []) or []),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,

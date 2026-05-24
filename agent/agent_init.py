@@ -289,8 +289,11 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "claude_code"}:
         agent.api_mode = api_mode
+    elif agent.provider == "claude-code" or agent._base_url_lower.startswith("claude-code://"):
+        agent.api_mode = "claude_code"
+        agent.provider = "claude-code"
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
@@ -321,6 +324,13 @@ def init_agent(
         agent.api_mode = "bedrock_converse"
     else:
         agent.api_mode = "chat_completions"
+
+    if agent.api_mode == "claude_code":
+        # Claude Code support intentionally only accepts an executable path.
+        # Do not carry generic ACP args into the Claude CLI invocation: Hermes
+        # builds a fixed, safety-bounded command line that disables slash
+        # commands and Claude-owned tools.
+        agent.acp_args = []
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
@@ -661,6 +671,24 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.api_mode == "claude_code":
+        # Claude Code is a local external-process transport, not an HTTP
+        # SDK provider.  Never build OpenAI/Anthropic clients or retain an
+        # API key for this mode; the Claude CLI owns its own authentication.
+        agent.api_key = ""
+        agent._anthropic_api_key = ""
+        agent._anthropic_base_url = None
+        agent._is_anthropic_oauth = False
+        agent._anthropic_client = None
+        agent.client = None
+        agent._client_kwargs = {
+            "api_key": "",
+            "base_url": agent.base_url or "claude-code://local",
+            "command": agent.acp_command,
+            "args": list(agent.acp_args or []),
+        }
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Code CLI)")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.

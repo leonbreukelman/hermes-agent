@@ -1644,7 +1644,7 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_model_overrides: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self, config: Optional[GatewayConfig] = None):
@@ -1730,7 +1730,7 @@ class GatewayRunner:
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -2347,6 +2347,8 @@ class GatewayRunner:
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "acp_command": override.get("acp_command"),
+                "acp_args": override.get("acp_args"),
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -10161,6 +10163,8 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    acp_command=getattr(result, "acp_command", None),
+                                    acp_args=getattr(result, "acp_args", []),
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -10179,6 +10183,8 @@ class GatewayRunner:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "acp_command": getattr(result, "acp_command", None),
+                            "acp_args": getattr(result, "acp_args", []),
                         }
 
                         # Evict cached agent so the next turn creates a fresh
@@ -10298,6 +10304,8 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    acp_command=getattr(result, "acp_command", None),
+                    acp_args=getattr(result, "acp_args", []),
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -10319,6 +10327,8 @@ class GatewayRunner:
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            "acp_command": getattr(result, "acp_command", None),
+            "acp_args": getattr(result, "acp_args", []),
         }
 
         # Evict cached agent so the next turn creates a fresh agent from the
@@ -14938,7 +14948,7 @@ class GatewayRunner:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
+        for key in ("provider", "api_key", "base_url", "api_mode", "acp_command", "acp_args"):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
