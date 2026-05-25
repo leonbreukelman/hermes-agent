@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -152,3 +153,65 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+def test_cmd_update_check_uses_origin_for_fork_release_channel(tmp_path, capsys):
+    """Patched fork installs should check the fork origin, not upstream/main."""
+    import hermes_cli.main as main
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "rev-list"]:
+            assert cmd[2] == "HEAD..origin/main"
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    with patch.object(main, "PROJECT_ROOT", repo), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch.object(main, "_get_origin_url", return_value="git@github.com:leonbreukelman/hermes-agent.git"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+        main._cmd_update_check()
+
+    commands = [" ".join(cmd) for cmd in calls]
+    assert "git fetch origin" in commands
+    assert all("fetch upstream" not in command for command in commands)
+    output = capsys.readouterr().out
+    assert "Fetching from fork origin" in output
+    assert "Already up to date" in output
+
+
+def test_cmd_update_check_keeps_upstream_reference_for_official_install(tmp_path, capsys):
+    """Official/non-fork installs keep the existing upstream-preferred check."""
+    import hermes_cli.main as main
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["git", "fetch", "upstream"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "rev-list"]:
+            assert cmd[2] == "HEAD..upstream/main"
+            return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    with patch.object(main, "PROJECT_ROOT", repo), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch.object(main, "_get_origin_url", return_value="https://github.com/NousResearch/hermes-agent.git"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+        main._cmd_update_check()
+
+    commands = [" ".join(cmd) for cmd in calls]
+    assert "git fetch upstream" in commands
+    output = capsys.readouterr().out
+    assert "behind upstream/main" in output

@@ -8354,28 +8354,41 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference
-    print("→ Fetching from upstream...")
-    fetch_result = subprocess.run(
-        git_cmd + ["fetch", "upstream"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_result.returncode != 0:
-        # Fallback to origin if upstream doesn't exist
-        print("→ Fetching from origin...")
+    # Report against the same remote ``hermes update`` will actually install
+    # from. For a patched fork install, ``origin`` is the user's release
+    # channel and ``upstream`` is only the official comparison source; showing
+    # upstream/main here makes ``update --check`` claim an update is available
+    # even when ``hermes update`` would be a no-op.
+    origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
+    if _is_fork(origin_url):
+        print("→ Fetching from fork origin...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
         )
-        upstream_exists = False
         compare_branch = "origin/main"
     else:
-        upstream_exists = True
-        compare_branch = "upstream/main"
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            # Fallback to origin if upstream doesn't exist
+            print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            compare_branch = "origin/main"
+        else:
+            compare_branch = "upstream/main"
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
