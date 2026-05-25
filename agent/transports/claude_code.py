@@ -80,6 +80,7 @@ _PROVIDER_DATA_STRING_LIMIT = 500
 _PROVIDER_DATA_TOTAL_LIMIT = 1800
 _PROVIDER_DATA_MAX_DEPTH = 5
 _PROVIDER_DATA_MAX_ITEMS = 30
+_STREAM_RESULT_CONTENT_KEYS = {"result", "content", "message", "text"}
 _STREAM_LINE_LIMIT = 256_000
 _STREAM_ERROR_PREVIEW_LIMIT = 800
 
@@ -299,6 +300,7 @@ class ClaudeCodeTransport(ProviderTransport):
         )
 
         final_event: Optional[ClaudeCodeStreamEvent] = None
+        delta_chunks: list[str] = []
         try:
             stdout_iter = self._iter_stream_stdout(
                 process,
@@ -309,8 +311,10 @@ class ClaudeCodeTransport(ProviderTransport):
             )
             for event in parse_stream_events(stdout_iter):
                 if event.kind == "delta":
-                    if event.text and on_text_delta:
-                        on_text_delta(event.text)
+                    if event.text:
+                        delta_chunks.append(event.text)
+                        if on_text_delta:
+                            on_text_delta(event.text)
                 elif event.kind == "result":
                     final_event = event
         except InterruptedError:
@@ -332,7 +336,15 @@ class ClaudeCodeTransport(ProviderTransport):
 
         normalized = self.normalize_response(final_event.data)
         if not self.validate_response(normalized):
-            raise RuntimeError("Claude Code CLI response did not include usable assistant content")
+            if (
+                isinstance(normalized, NormalizedResponse)
+                and not normalized.content
+                and not normalized.tool_calls
+                and delta_chunks
+            ):
+                normalized.content = "".join(delta_chunks)
+            if not self.validate_response(normalized):
+                raise RuntimeError("Claude Code CLI response did not include usable assistant content")
         return normalized
 
     def _run_completed_process_runner(self, command: list[str], timeout: Any, runner: Any) -> Any:
@@ -734,6 +746,34 @@ class ClaudeCodeTransport(ProviderTransport):
         )
 
     @classmethod
+    def _sanitize_stream_result_data(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize a final stream result without truncating assistant text.
+
+        Final ``stream-json`` result events contain both assistant content and
+        provider metadata.  Provider metadata must stay redacted and bounded,
+        but content fields need to reach ``normalize_response`` intact or long
+        Claude Code answers are clipped to provider-data preview limits.
+        """
+        if not isinstance(data, dict):
+            return {}
+
+        metadata = {
+            key: value
+            for key, value in data.items()
+            if key not in _STREAM_RESULT_CONTENT_KEYS and key != "usage"
+        }
+        sanitized = cls._sanitize_provider_data(metadata) or {}
+
+        for key in _STREAM_RESULT_CONTENT_KEYS:
+            if key in data:
+                sanitized[key] = data[key]
+
+        if "usage" in data:
+            sanitized["usage"] = cls._sanitize_provider_value(data["usage"], key="usage")
+
+        return sanitized
+
+    @classmethod
     def _sanitize_provider_data(cls, value: Dict[str, Any]) -> Dict[str, Any] | None:
         if not value:
             return None
@@ -1040,7 +1080,7 @@ def _parse_stream_json_line(line: str) -> Optional[ClaudeCodeStreamEvent]:
     event_type = str(data.get("type") or "").strip()
 
     if event_type == "result":
-        sanitized = ClaudeCodeTransport._sanitize_provider_data(data) or {}
+        sanitized = ClaudeCodeTransport._sanitize_stream_result_data(data)
         content = _stream_event_text(data)
         return ClaudeCodeStreamEvent(
             kind="result",

@@ -957,6 +957,173 @@ def test_run_stream_invokes_stream_json_and_emits_deltas():
     assert secret not in str(response.provider_data)
 
 
+def test_run_stream_preserves_long_final_result_content():
+    transport = get_transport("claude_code")
+    assert transport is not None
+    secret = _fake_github_token("q")
+    long_result = "x" * 1200
+    process = _FakeStreamPopen(
+        stdout_lines=[
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": long_result,
+                    "session_id": "safe-long-session",
+                    "api_key": secret,
+                    "credentials": {"access_token": secret},
+                    "usage": {"input_tokens": 7, "output_tokens": 11},
+                }
+            ) + "\n",
+        ]
+    )
+
+    response = transport.run_stream(
+        {
+            "command": ["/tmp/claude", "-p", "long", "--output-format", "json"],
+            "timeout": 5,
+        },
+        popen_factory=lambda command, **kwargs: process,
+        sleep=lambda _: None,
+    )
+
+    assert response.content == long_result
+    assert not response.content.endswith("...[truncated]")
+    assert response.usage.total_tokens == 18
+    provider_data_text = str(response.provider_data)
+    assert response.provider_data["session_id"] == "safe-long-session"
+    assert secret not in provider_data_text
+    assert "[REDACTED]" in provider_data_text
+
+
+def test_run_stream_uses_text_deltas_when_final_result_is_empty():
+    transport = get_transport("claude_code")
+    assert transport is not None
+    process = _FakeStreamPopen(
+        stdout_lines=[
+            json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "Hello "},
+                    },
+                }
+            ) + "\n",
+            json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "world"},
+                    },
+                }
+            ) + "\n",
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "",
+                    "session_id": "safe-empty-session",
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                }
+            ) + "\n",
+        ]
+    )
+    deltas = []
+
+    response = transport.run_stream(
+        {
+            "command": ["/tmp/claude", "-p", "empty", "--output-format", "json"],
+            "timeout": 5,
+        },
+        popen_factory=lambda command, **kwargs: process,
+        on_text_delta=deltas.append,
+        sleep=lambda _: None,
+    )
+
+    assert deltas == ["Hello ", "world"]
+    assert response.content == "Hello world"
+    assert response.usage.total_tokens == 3
+    assert response.provider_data["session_id"] == "safe-empty-session"
+
+
+def test_run_stream_does_not_use_deltas_for_error_result():
+    transport = get_transport("claude_code")
+    assert transport is not None
+    process = _FakeStreamPopen(
+        stdout_lines=[
+            json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "do not return me"},
+                    },
+                }
+            ) + "\n",
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "result": "max turns reached",
+                }
+            ) + "\n",
+        ]
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        transport.run_stream(
+            {
+                "command": ["/tmp/claude", "-p", "error", "--output-format", "json"],
+                "timeout": 5,
+            },
+            popen_factory=lambda command, **kwargs: process,
+            sleep=lambda _: None,
+        )
+
+    message = str(exc_info.value)
+    assert "error result" in message
+    assert "max turns reached" in message
+    assert "do not return me" not in message
+
+
+def test_run_stream_ignores_thinking_deltas_for_empty_final_result():
+    transport = get_transport("claude_code")
+    assert transport is not None
+    process = _FakeStreamPopen(
+        stdout_lines=[
+            json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "thinking_delta", "thinking": "hidden reasoning"},
+                    },
+                }
+            ) + "\n",
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "",
+                    "session_id": "safe-thinking-session",
+                }
+            ) + "\n",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="did not include usable assistant content"):
+        transport.run_stream(
+            {
+                "command": ["/tmp/claude", "-p", "thinking", "--output-format", "json"],
+                "timeout": 5,
+            },
+            popen_factory=lambda command, **kwargs: process,
+            sleep=lambda _: None,
+        )
+
+
 def test_run_stream_requires_final_result_event():
     transport = get_transport("claude_code")
     process = _FakeStreamPopen(
