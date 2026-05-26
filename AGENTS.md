@@ -13,6 +13,20 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Repo Housekeeping / Definition of Done
+
+For owned code-delivery work, do not stop with a dirty worktree. Before handoff,
+inspect `git status --short --branch`, stage only intentional pathspecs, commit
+verified changes, and push/open a PR when credentials and task scope allow it.
+Uncommitted edits are not an acceptable final state unless a true blocker is
+called out explicitly. Prefer commits, branches, and PRs as rollback/audit
+handles instead of withholding commits because a change is reversible.
+
+If work began on the wrong branch or directly on `main`, package the exact
+intended commits onto a named branch, push it, and clean up the canonical
+checkout so it is not left ahead/dirty. Preserve unrelated user work, but
+classify it plainly rather than burying it in the final report.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
