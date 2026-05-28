@@ -168,6 +168,9 @@ def test_cmd_update_check_uses_origin_for_fork_release_channel(tmp_path, capsys)
         calls.append(cmd)
         if cmd[:3] == ["git", "fetch", "origin"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:4] == ["git", "rev-parse", "--verify", "--quiet"]:
+            assert cmd[4] == "origin/main"
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main\n", stderr="")
         if cmd[:2] == ["git", "rev-list"]:
             assert cmd[2] == "HEAD..origin/main"
             return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
@@ -200,6 +203,9 @@ def test_cmd_update_check_keeps_upstream_reference_for_official_install(tmp_path
         calls.append(cmd)
         if cmd[:3] == ["git", "fetch", "upstream"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:4] == ["git", "rev-parse", "--verify", "--quiet"]:
+            assert cmd[4] == "upstream/main"
+            return subprocess.CompletedProcess(cmd, 0, stdout="upstream/main\n", stderr="")
         if cmd[:2] == ["git", "rev-list"]:
             assert cmd[2] == "HEAD..upstream/main"
             return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
