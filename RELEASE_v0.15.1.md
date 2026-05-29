@@ -67,7 +67,7 @@
 
 ## ✨ Small Features
 
-- **Hindsight default narrowed to observation-only** for `recall_types` — tool path is also narrowed ([#34079](https://github.com/NousResearch/hermes-agent/pull/34079) — @nicoloboschi, follow-up [#34091](https://github.com/NousResearch/hermes-agent/pull/4df62d239e38bf8c212a595721c9c01e176f6c3a) — @kshitijk4poor)
+- **Hindsight default narrowed to observation-only** for `recall_types` — tool path is also narrowed ([#34079](https://github.com/NousResearch/hermes-agent/pull/34079) — @nicoloboschi, follow-up [#34091](https://github.com/NousResearch/hermes-agent/pull/34091) — @kshitijk4poor)
 - **Memory providers receive completed-turn message context** — salvage of [#28065](https://github.com/NousResearch/hermes-agent/pull/28065) ([#34097](https://github.com/NousResearch/hermes-agent/pull/34097) — @kshitijk4poor, credit to @devwdave)
 
 ---
