@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 
@@ -8,6 +9,10 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.transports.claude_code import (
+    CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE,
+    HERMES_MCP_SERVER_NAME,
+)
 from agent.transports.types import NormalizedResponse
 
 _IGNORED_KEY_VALUE = "ignored" + "-api-key"
@@ -21,6 +26,21 @@ def _fake_anthropic_token(fill: str, length: int = 30) -> str:
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [])
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+
+
+def _fake_tool_definition(name: str, parameters: dict | None = None) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"Fake {name} tool",
+            "parameters": parameters or {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _disallowed_tools_csv() -> str:
+    return ",".join(CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE)
 
 
 def test_claude_code_agent_initializes_without_openai_or_anthropic_client(monkeypatch):
@@ -49,7 +69,8 @@ def test_claude_code_agent_initializes_without_openai_or_anthropic_client(monkey
         {"role": "user", "content": "Say hello."},
     ])
 
-    assert kwargs["command"] == [
+    command = kwargs["command"]
+    assert command == [
         "/tmp/claude",
         "-p",
         "Say hello.",
@@ -63,9 +84,69 @@ def test_claude_code_agent_initializes_without_openai_or_anthropic_client(monkey
         '{"mcpServers":{}}',
         "--system-prompt",
         "Be concise.",
-        "--tools",
-        "",
+        "--disallowedTools",
+        _disallowed_tools_csv(),
     ]
+    assert "--tools" not in command
+
+
+def test_claude_code_build_api_kwargs_exposes_hermes_mcp_without_tools_mask(monkeypatch):
+    web_search_params = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+    monkeypatch.setattr(
+        run_agent,
+        "get_tool_definitions",
+        lambda **kwargs: [_fake_tool_definition("web_search", web_search_params)],
+    )
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setenv("HERMES_CLAUDE_CODE_COMMAND", "/tmp/claude")
+
+    agent = run_agent.AIAgent(
+        model="sonnet",
+        provider="claude-code",
+        api_mode="claude_code",
+        base_url="claude-code://local",
+        api_key="",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Search the web."}])
+    command = kwargs["command"]
+
+    assert "--tools" not in command
+    assert command[command.index("--disallowedTools") + 1] == _disallowed_tools_csv()
+    for builtin in (
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Grep",
+        "LS",
+        "WebFetch",
+        "LSP",
+        "Skill",
+        "Workflow",
+        "AskUserQuestion",
+        "ScheduleWakeup",
+        "TaskCreate",
+        "CronCreate",
+    ):
+        assert builtin in CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE
+    assert "ToolSearch" not in CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE
+
+    allowed = command[command.index("--allowedTools") + 1].split(",")
+    assert allowed == [f"mcp__{HERMES_MCP_SERVER_NAME}__web_search"]
+
+    raw_mcp_config = command[command.index("--mcp-config") + 1]
+    mcp_config = json.loads(raw_mcp_config)
+    assert set(mcp_config["mcpServers"]) == {HERMES_MCP_SERVER_NAME}
+    assert f"mcp__{next(iter(mcp_config['mcpServers']))}__web_search" in allowed
 
 
 def test_claude_code_build_api_kwargs_raises_when_transport_missing(monkeypatch):

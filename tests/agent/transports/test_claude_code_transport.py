@@ -22,6 +22,10 @@ _FAKE_ANTHROPIC_PREFIX = "sk" + "-ant-"
 _FAKE_GITHUB_PREFIX = "gh" + "p_"
 
 
+def _disallowed_tools_csv() -> str:
+    return ",".join(claude_code_module.CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE)
+
+
 def _fake_anthropic_token(fill: str, length: int = 30) -> str:
     return _FAKE_ANTHROPIC_PREFIX + (fill * length)
 
@@ -151,8 +155,8 @@ def test_build_kwargs_creates_safe_noninteractive_cli_command():
         '{"mcpServers":{}}',
         "--system-prompt",
         "You are concise.",
-        "--tools",
-        "",
+        "--disallowedTools",
+        _disallowed_tools_csv(),
     ]
     assert kwargs["timeout"] == 12
     assert kwargs["prompt"] == "Say hello."
@@ -171,8 +175,9 @@ def test_build_kwargs_includes_provider_mode_isolation_flags():
     )
 
     command = kwargs["command"]
-    assert command.count("--tools") == 1
-    assert command[command.index("--tools") + 1] == ""
+    assert "--tools" not in command
+    assert command.count("--disallowedTools") == 1
+    assert command[command.index("--disallowedTools") + 1] == _disallowed_tools_csv()
     assert command.count("--disable-slash-commands") == 1
     assert command.count("--strict-mcp-config") == 1
     assert command.count("--mcp-config") == 1
@@ -200,7 +205,7 @@ def test_build_kwargs_exposes_supported_hermes_tools_via_mcp():
     )
 
     command = kwargs["command"]
-    assert command[command.index("--tools") + 1] == ""
+    assert "--tools" not in command
     assert command.count("--allowedTools") == 1
     assert command[command.index("--allowedTools") + 1] == ",".join([
         "mcp__hermes-tools__web_search",
@@ -247,8 +252,26 @@ def test_no_env_or_config_can_inject_bare_or_user_mcp_config(monkeypatch):
     assert "--setting-sources" not in command
     assert command.count("--mcp-config") == 1
     assert json.loads(command[command.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert "--tools" not in command
+    assert command.count("--disallowedTools") == 1
+    assert command[command.index("--disallowedTools") + 1] == _disallowed_tools_csv()
+
+
+def test_stream_json_command_preserves_prompt_that_looks_like_tools_flag():
+    command = claude_code_module.ClaudeCodeTransport._stream_json_command([
+        "/tmp/claude",
+        "-p",
+        "--tools",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+    ])
+
+    assert command[2] == "--tools"
+    assert command[command.index("--output-format") + 1] == "stream-json"
     assert command.count("--tools") == 1
-    assert command[command.index("--tools") + 1] == ""
+
 
 
 def test_cli_path_resolution_order(monkeypatch):
@@ -962,8 +985,18 @@ def test_run_stream_invokes_stream_json_and_emits_deltas():
                 "/tmp/claude",
                 "-p",
                 "hi",
+                "--model",
+                "sonnet",
                 "--output-format",
                 "json",
+                "--allowedTools",
+                "mcp__hermes-tools__web_search",
+                "--disallowedTools",
+                _disallowed_tools_csv(),
+                "--system-prompt",
+                "--tools",
+                # Stale flag emitted by older code paths should be stripped
+                # without corrupting the preceding system-prompt value.
                 "--tools",
                 "",
             ],
@@ -976,9 +1009,12 @@ def test_run_stream_invokes_stream_json_and_emits_deltas():
 
     command, kwargs = popen_calls[0]
     assert command[command.index("--output-format") + 1] == "stream-json"
+    assert command[command.index("--allowedTools") + 1] == "mcp__hermes-tools__web_search"
+    assert command[command.index("--disallowedTools") + 1] == _disallowed_tools_csv()
+    assert command[command.index("--system-prompt") + 1] == "--tools"
     assert "--verbose" in command
     assert "--include-partial-messages" in command
-    assert command[command.index("--tools") + 1] == ""
+    assert command.count("--tools") == 1
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["stdout"] is subprocess.PIPE
     assert kwargs["stderr"] is subprocess.PIPE

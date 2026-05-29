@@ -44,6 +44,7 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -51,6 +52,8 @@ import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+HERMES_MCP_SERVER_NAME = "hermes-tools"
 
 
 # Tools we expose. Each name MUST match a registered Hermes tool that
@@ -106,11 +109,16 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 
 
 def _build_server() -> Any:
-    """Create the FastMCP server with Hermes tools attached. Lazy imports
-    so the module can be imported without the mcp package installed
-    (we degrade to a clear error only when actually run)."""
+    """Create the low-level MCP server with Hermes tools attached.
+
+    The low-level server API lets us return Hermes' authoritative JSON schemas
+    verbatim. FastMCP inspects Python callable signatures, and a generic
+    ``**kwargs`` dispatch wrapper exposes an incorrect top-level ``kwargs``
+    schema to Claude Code.
+    """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp import types as mcp_types
+        from mcp.server.lowlevel import Server
     except ImportError as exc:  # pragma: no cover - install hint
         raise ImportError(
             f"hermes-tools MCP server requires the 'mcp' package: {exc}"
@@ -122,14 +130,14 @@ def _build_server() -> Any:
         handle_function_call,
     )
 
-    mcp = FastMCP(
-        "hermes-tools",
+    server = Server(
+        HERMES_MCP_SERVER_NAME,
         instructions=(
             "Hermes Agent's tool surface, exposed for use inside a Codex "
-            "session. Use these for capabilities Codex's built-in toolset "
-            "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "or Claude Code session. Use these for capabilities the host "
+            "runtime's built-in toolset doesn't cover: web search/extract, "
+            "browser automation, vision, image generation, skills, TTS, and "
+            "kanban handoff."
         ),
     )
 
@@ -141,8 +149,7 @@ def _build_server() -> Any:
         if isinstance(td, dict) and td.get("type") == "function"
     }
 
-    exposed_count = 0
-
+    tool_specs: dict[str, dict[str, Any]] = {}
     for name in EXPOSED_TOOLS:
         spec = all_defs.get(name)
         if spec is None:
@@ -151,47 +158,81 @@ def _build_server() -> Any:
             )
             continue
 
-        description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
+        if not isinstance(params_schema, dict):
+            params_schema = {"type": "object", "properties": {}}
+        tool_specs[name] = {
+            "description": spec.get("description") or f"Hermes {name} tool",
+            "input_schema": params_schema,
+        }
 
-        # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
-        def _make_handler(tool_name: str):
-            def _dispatch(**kwargs: Any) -> str:
-                try:
-                    return handle_function_call(tool_name, kwargs or {})
-                except Exception as exc:
-                    logger.exception("tool %s raised", tool_name)
-                    return json.dumps({"error": str(exc), "tool": tool_name})
-            _dispatch.__name__ = tool_name
-            _dispatch.__doc__ = description
-            return _dispatch
-
-        try:
-            mcp.add_tool(
-                _make_handler(name),
+    @server.list_tools()
+    async def _list_tools() -> list[Any]:
+        return [
+            mcp_types.Tool(
                 name=name,
-                description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
+                description=tool_specs[name]["description"],
+                inputSchema=tool_specs[name]["input_schema"],
             )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
-            handler = mcp.tool(name=name, description=description)(handler)
+            for name in tool_specs
+        ]
 
-        exposed_count += 1
+    @server.call_tool(validate_input=True)
+    async def _call_tool(name: str, arguments: dict[str, Any] | None) -> Any:
+        if name not in tool_specs:
+            return mcp_types.CallToolResult(
+                content=[
+                    mcp_types.TextContent(
+                        type="text",
+                        text=json.dumps({"error": f"unknown Hermes tool: {name}", "tool": name}),
+                    )
+                ],
+                isError=True,
+            )
+        try:
+            result = handle_function_call(name, arguments or {})
+        except Exception as exc:
+            logger.exception("tool %s raised", name)
+            return mcp_types.CallToolResult(
+                content=[
+                    mcp_types.TextContent(
+                        type="text",
+                        text=json.dumps({"error": str(exc), "tool": name}),
+                    )
+                ],
+                isError=True,
+            )
+
+        if isinstance(result, str):
+            text = result
+        else:
+            try:
+                text = json.dumps(result)
+            except TypeError:
+                text = str(result)
+        return mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=text)],
+            isError=False,
+        )
 
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
-        exposed_count,
+        len(tool_specs),
         len(EXPOSED_TOOLS),
     )
-    return mcp
+    return server
+
+
+async def _run_stdio_server(server: Any) -> None:
+    """Run a low-level MCP server over stdio without writing logs to stdout."""
+    from mcp.server.stdio import stdio_server
+
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            server.create_initialization_options(),
+        )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -216,10 +257,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         sys.stderr.write(f"hermes-tools MCP server cannot start: {exc}\n")
         return 2
 
-    # FastMCP runs with stdio transport by default when launched as a
-    # subprocess.
+    # Low-level MCP uses explicit streams. Retain the legacy zero-arg run path
+    # for tests that monkeypatch _build_server with a tiny fake.
     try:
-        server.run()
+        if hasattr(server, "create_initialization_options"):
+            asyncio.run(_run_stdio_server(server))
+        else:  # pragma: no cover - compatibility seam for simple fakes
+            server.run()
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
