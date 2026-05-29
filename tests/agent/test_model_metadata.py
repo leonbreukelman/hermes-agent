@@ -967,6 +967,27 @@ class TestBedrockContextResolution:
         assert ctx == 200000
         mock_fetch.assert_not_called()
 
+    def test_bedrock_context_lookup_does_not_import_heavy_adapter(self, monkeypatch):
+        """Context metadata lookup must not trigger boto3 lazy installation."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "agent.bedrock_adapter":
+                raise AssertionError("model_metadata must not import bedrock_adapter for static context lookup")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+        ctx = get_model_context_length(
+            "anthropic.claude-opus-4-v1:0",
+            provider="bedrock",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        )
+
+        assert ctx == 200000
+
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_bedrock_url_without_provider_hint(self, mock_fetch):
         """bedrock-runtime host infers Bedrock even when provider is omitted."""
