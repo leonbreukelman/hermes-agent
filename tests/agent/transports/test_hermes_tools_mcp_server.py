@@ -8,6 +8,71 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import asyncio
+
+
+def _fake_tool_definition(name: str, params: dict) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"Fake {name} description",
+            "parameters": params,
+        },
+    }
+
+
+def _build_test_server(monkeypatch, *, calls=None, raise_on_call: Exception | None = None):
+    import model_tools
+    import agent.transports.hermes_tools_mcp_server as m
+
+    definitions = [
+        _fake_tool_definition(
+            "web_search",
+            {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        ),
+        _fake_tool_definition(
+            "skill_view",
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        ),
+    ]
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda quiet_mode=True: definitions)
+
+    def fake_handle_function_call(name, arguments, *args, **kwargs):
+        if calls is not None:
+            calls.append((name, arguments))
+        if raise_on_call is not None:
+            raise raise_on_call
+        return f"handled {name}"
+
+    monkeypatch.setattr(model_tools, "handle_function_call", fake_handle_function_call)
+    return m._build_server()
+
+
+async def _listed_tools(server):
+    from mcp import types as mcp_types
+
+    result = await server.request_handlers[mcp_types.ListToolsRequest](None)
+    return result.root.tools
+
+
+async def _call_tool(server, name: str, arguments: dict | None):
+    from mcp import types as mcp_types
+
+    request = mcp_types.CallToolRequest(
+        params=mcp_types.CallToolRequestParams(name=name, arguments=arguments)
+    )
+    return await server.request_handlers[mcp_types.CallToolRequest](request)
+
 
 
 
@@ -95,6 +160,50 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+    def test_mcp_list_tools_uses_hermes_json_schema_not_kwargs(self, monkeypatch):
+        server = _build_test_server(monkeypatch)
+
+        tools = {tool.name: tool for tool in asyncio.run(_listed_tools(server))}
+
+        web_schema = tools["web_search"].inputSchema
+        assert "query" in web_schema["properties"]
+        assert web_schema["required"] == ["query"]
+        assert "kwargs" not in web_schema["properties"]
+
+        skill_schema = tools["skill_view"].inputSchema
+        assert "name" in skill_schema["properties"]
+        assert skill_schema["required"] == ["name"]
+        assert "kwargs" not in skill_schema["properties"]
+
+    def test_mcp_call_tool_dispatches_top_level_arguments(self, monkeypatch):
+        calls = []
+        server = _build_test_server(monkeypatch, calls=calls)
+
+        result = asyncio.run(_call_tool(server, "web_search", {"query": "hermes agent"}))
+
+        assert calls == [("web_search", {"query": "hermes agent"})]
+        assert result.root.isError is False
+        assert result.root.content[0].text == "handled web_search"
+
+    def test_mcp_call_tool_missing_required_field_returns_error(self, monkeypatch):
+        calls = []
+        server = _build_test_server(monkeypatch, calls=calls)
+
+        result = asyncio.run(_call_tool(server, "web_search", {}))
+
+        assert calls == []
+        assert result.root.isError is True
+        assert "Input validation error" in result.root.content[0].text
+        assert "query" in result.root.content[0].text
+
+    def test_mcp_call_tool_exception_returns_error_result(self, monkeypatch):
+        server = _build_test_server(monkeypatch, raise_on_call=RuntimeError("boom"))
+
+        result = asyncio.run(_call_tool(server, "web_search", {"query": "hermes"}))
+
+        assert result.root.isError is True
+        assert "boom" in result.root.content[0].text
 
 
 class TestMain:

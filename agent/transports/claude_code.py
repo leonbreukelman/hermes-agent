@@ -22,12 +22,64 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 
 from agent.redact import redact_sensitive_text
 from agent.transports.base import ProviderTransport
+from agent.transports.hermes_tools_mcp_server import HERMES_MCP_SERVER_NAME
 from agent.transports.types import NormalizedResponse, Usage
 
 
 _DEFAULT_CLAUDE_CLI_PATH = "claude"
 _EMPTY_MCP_CONFIG_JSON = '{"mcpServers":{}}'
 _REDACTED = "[REDACTED]"
+# ``--allowedTools`` is restricted to Hermes MCP names when any Hermes tool is
+# exposed.  This denylist is the explicit defense-in-depth layer for Claude Code
+# built-ins observed in 2.1.x; keep it broad when new CLI releases add tools.
+CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE: tuple[str, ...] = (
+    # Shell/process and filesystem primitives.
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+    "LS",
+    # Agent/workflow/task primitives that can delegate side effects outside the
+    # Hermes tool boundary.
+    "Agent",
+    "Task",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "TaskUpdate",
+    "TodoWrite",
+    "Workflow",
+    # Built-in web/search/notebook/IDE/worktree/planning helpers.  Hermes
+    # exposes its own web/browser tools through MCP instead.  ToolSearch is
+    # intentionally not denied: Claude Code 2.1.x uses it to materialize schemas
+    # for explicitly allowed Hermes MCP tool names derived from
+    # HERMES_MCP_SERVER_NAME.
+    "WebFetch",
+    "WebSearch",
+    "NotebookRead",
+    "NotebookEdit",
+    "LSP",
+    "ExitPlanMode",
+    "EnterPlanMode",
+    "EnterWorktree",
+    "ExitWorktree",
+    # Misc built-ins with user/session/scheduling side effects.
+    "AskUserQuestion",
+    "ScheduleWakeup",
+    "Skill",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+)
 
 # This transport is an external-process boundary. Claude Code stdout/stderr can
 # include CLI/auth diagnostics; never surface credential-looking values verbatim
@@ -164,13 +216,16 @@ class ClaudeCodeTransport(ProviderTransport):
         }
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> str:
-        """Disable Claude Code's built-in tools for this bridge.
+        """Return Claude Code built-ins that this bridge always denies.
 
         Hermes exposes a curated subset of its native tools through a strict
-        stdio MCP server.  Claude Code's own filesystem/shell tools stay
-        disabled so the Hermes permission/tool boundary remains authoritative.
+        stdio MCP server. Claude Code's own filesystem, shell, search, and
+        task-management tools stay denied so the Hermes permission/tool
+        boundary remains authoritative. We intentionally do not use
+        ``--tools ""`` because current Claude Code releases also hide MCP
+        tools when that flag is present.
         """
-        return ""
+        return ",".join(CLAUDE_CODE_BUILTIN_TOOLS_TO_DISABLE)
 
     def _extract_supported_hermes_tool_names(self, tools: List[Dict[str, Any]]) -> list[str]:
         if not tools:
@@ -208,7 +263,7 @@ class ClaudeCodeTransport(ProviderTransport):
         return json.dumps(
             {
                 "mcpServers": {
-                    "hermes-tools": {
+                    HERMES_MCP_SERVER_NAME: {
                         "command": sys.executable,
                         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
                         "env": env,
@@ -222,7 +277,7 @@ class ClaudeCodeTransport(ProviderTransport):
 
     def _allowed_hermes_mcp_tools(self, tools: List[Dict[str, Any]]) -> list[str]:
         return [
-            f"mcp__hermes-tools__{name}"
+            f"mcp__{HERMES_MCP_SERVER_NAME}__{name}"
             for name in self._extract_supported_hermes_tool_names(tools)
         ]
 
@@ -269,7 +324,7 @@ class ClaudeCodeTransport(ProviderTransport):
             command.extend(["--allowedTools", ",".join(allowed_hermes_tools)])
         if system_prompt:
             command.extend(["--system-prompt", system_prompt])
-        command.extend(["--tools", self.convert_tools(tools or [])])
+        command.extend(["--disallowedTools", self.convert_tools(tools or [])])
 
         timeout = params.get("timeout")
         if timeout is None:
@@ -347,8 +402,8 @@ class ClaudeCodeTransport(ProviderTransport):
         """Invoke Claude Code in ``stream-json`` mode and normalize the final result.
 
         Streaming stays inside the same external-process safety boundary as
-        ``run()``: stdin is closed, Claude tools remain disabled via
-        ``--tools ""``, Anthropic-shaped env vars are scrubbed, and stdout
+        ``run()``: stdin is closed, Claude Code built-ins are denied with
+        ``--disallowedTools``, Anthropic-shaped env vars are scrubbed, and stdout
         events are parsed into sanitized Hermes deltas before callbacks fire.
         """
         command = api_kwargs.get("command")
@@ -515,14 +570,42 @@ class ClaudeCodeTransport(ProviderTransport):
         if "--include-partial-messages" not in stream_command:
             stream_command.append("--include-partial-messages")
 
-        if "--tools" in stream_command:
-            idx = stream_command.index("--tools")
-            if idx + 1 < len(stream_command):
-                stream_command[idx + 1] = ""
-            else:
-                stream_command.append("")
-        else:
-            stream_command.extend(["--tools", ""])
+        # Do not add Claude Code's legacy ``--tools ""`` mask here.  The
+        # stream-json path is the runtime path used by Hermes chat, and current
+        # Claude Code releases apply that mask to MCP tools too.  Built-ins are
+        # denied by ``--disallowedTools`` while Hermes MCP tools are exposed via
+        # ``--allowedTools`` above.  Strip any stale ``--tools`` option left by
+        # older callers, but preserve the fixed ``claude -p <prompt>`` prefix so
+        # a user prompt that happens to equal "--tools" is not treated as a CLI
+        # option.
+        if len(stream_command) > 3:
+            options_with_values = {
+                "--allowedTools",
+                "--allowed-tools",
+                "--debug-file",
+                "--disallowedTools",
+                "--disallowed-tools",
+                "--mcp-config",
+                "--model",
+                "--output-format",
+                "--system-prompt",
+            }
+            filtered = stream_command[:3]
+            idx = 3
+            while idx < len(stream_command):
+                arg = stream_command[idx]
+                if arg == "--tools":
+                    idx += 2
+                    continue
+                if isinstance(arg, str) and arg.startswith("--tools="):
+                    idx += 1
+                    continue
+                filtered.append(arg)
+                if arg in options_with_values and idx + 1 < len(stream_command):
+                    idx += 1
+                    filtered.append(stream_command[idx])
+                idx += 1
+            stream_command = filtered
         return stream_command
 
     def _start_stream_process(self, command: list[str], *, popen_factory: Any) -> tuple[Any, list[str]]:
