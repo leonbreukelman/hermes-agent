@@ -565,6 +565,38 @@ def _resolve_alias_fallback(
     return None
 
 
+def _resolve_external_process_local_selector(
+    raw_input: str,
+    current_provider: str,
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+) -> Optional[tuple[str, str, str]]:
+    """Keep exact local selectors on external-process providers.
+
+    Claude Code exposes short, provider-local selectors such as ``opus`` and
+    ``sonnet``. Those strings also exist in the global alias table for
+    Anthropic-style providers, so a bare ``/model opus`` while already on
+    ``claude-code`` must not fall through to the cross-provider alias fallback.
+    """
+    key = raw_input.strip().lower()
+    if not key:
+        return None
+
+    pdef = resolve_provider_full(current_provider, user_providers, custom_providers)
+    if pdef is None or pdef.auth_type != "external_process":
+        return None
+
+    try:
+        from hermes_cli.models import provider_model_ids
+
+        for model_id in provider_model_ids(pdef.id):
+            if model_id.lower() == key:
+                return (pdef.id, model_id, key)
+    except Exception:
+        return None
+    return None
+
+
 def resolve_display_context_length(
     model: str,
     provider: str,
@@ -757,9 +789,23 @@ def switch_model(
                 resolved_alias, new_model, target_provider,
             )
         else:
-            # --- Step b: Alias exists but not on current provider -> fallback ---
+            # --- Step b: Keep exact local selectors on external-process providers ---
             key = raw_input.strip().lower()
-            if key in MODEL_ALIASES:
+            local_selector_result = _resolve_external_process_local_selector(
+                raw_input,
+                current_provider,
+                user_providers,
+                custom_providers,
+            )
+            if local_selector_result is not None:
+                target_provider, new_model, resolved_alias = local_selector_result
+                logger.debug(
+                    "Selector '%s' preserved on external-process provider %s",
+                    resolved_alias,
+                    target_provider,
+                )
+            # --- Step c: Alias exists but not on current provider -> fallback ---
+            elif key in MODEL_ALIASES:
                 authed = get_authenticated_provider_slugs(
                     current_provider=current_provider,
                     user_providers=user_providers,
@@ -784,7 +830,7 @@ def switch_model(
                         ),
                     )
             else:
-                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
+                # --- Step d: On aggregator, convert vendor:model to vendor/model ---
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
@@ -800,9 +846,9 @@ def switch_model(
                             raw_input, new_model,
                         )
 
-        # --- Step d: Aggregator catalog search ---
+        # --- Step e: Aggregator catalog search ---
         # Track whether the live catalog of the CURRENT provider resolved the
-        # model — if so, step e must not second-guess and switch providers.
+        # model — if so, step f must not second-guess and switch providers.
         # Critical for flat-namespace resellers like opencode-go / opencode-zen
         # whose live /v1/models returns bare IDs (e.g. "deepseek-v4-flash") that
         # coincidentally match entries in native providers' static catalogs.
@@ -825,7 +871,7 @@ def switch_model(
                                 resolved_in_current_catalog = True
                                 break
 
-        # --- Step e: detect_provider_for_model() as last resort ---
+        # --- Step f: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in {"custom", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base

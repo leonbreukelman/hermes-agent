@@ -301,6 +301,43 @@ def test_model_switch_opus_with_claude_code_uses_cli_mode(monkeypatch):
     assert result.api_mode == "claude_code"
 
 
+def test_bare_model_switch_alias_stays_on_current_claude_code_provider(monkeypatch):
+    def fail_if_fallback_is_used(**kwargs):
+        raise AssertionError("claude-code local selectors should not use provider fallback")
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "",
+            "base_url": "claude-code://local",
+            "api_mode": "claude_code",
+            "command": "/tmp/claude",
+            "args": [],
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_authenticated_provider_slugs", fail_if_fallback_is_used)
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="opus",
+        current_provider="claude-code",
+        current_model="sonnet",
+        current_base_url="claude-code://local",
+        current_api_key="",
+    )
+
+    assert result.success is True
+    assert result.target_provider == "claude-code"
+    assert result.provider_changed is False
+    assert result.new_model == "opus"
+    assert result.base_url == "claude-code://local"
+    assert result.api_mode == "claude_code"
+    assert result.acp_command == "/tmp/claude"
+    assert result.acp_args == []
+
+
 def test_model_switch_result_preserves_claude_code_command_metadata(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
