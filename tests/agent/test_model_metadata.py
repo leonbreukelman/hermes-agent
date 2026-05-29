@@ -754,6 +754,25 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         assert get_model_context_length("unknown/never-heard-of-this") == CONTEXT_PROBE_TIERS[0]
 
+    @patch("agent.model_metadata._query_ollama_api_show")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_claude_code_selectors_use_cli_context_contract(self, mock_fetch, mock_ollama):
+        """Claude Code aliases are local CLI selectors, not unknown models.
+
+        Live Claude Code runtime lookup passes the bare selector plus
+        provider/base_url metadata.  That path must resolve to Claude Code's
+        usable 200K window instead of the generic unknown-model probe tier.
+        """
+        mock_fetch.return_value = {}
+        mock_ollama.return_value = None
+
+        for selector in ("opus", "sonnet", "haiku"):
+            assert get_model_context_length(
+                selector,
+                provider="claude-code",
+                base_url="claude-code://local",
+            ) == 200000
+
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_partial_match_in_defaults(self, mock_fetch):
         mock_fetch.return_value = {}

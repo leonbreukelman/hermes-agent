@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -178,6 +179,38 @@ def test_build_kwargs_includes_provider_mode_isolation_flags():
     mcp_config = command[command.index("--mcp-config") + 1]
     assert json.loads(mcp_config) == {"mcpServers": {}}
     assert "--bare" not in command
+
+
+def test_build_kwargs_exposes_supported_hermes_tools_via_mcp():
+    transport = get_transport("claude_code")
+    assert transport is not None
+
+    kwargs = transport.build_kwargs(
+        model="opus",
+        messages=[{"role": "user", "content": "Search the web."}],
+        tools=[
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "function": {"name": "browser_snapshot"}},
+            # Shell/file tools are intentionally not bridged through the
+            # stateless Hermes MCP server.
+            {"type": "function", "function": {"name": "terminal"}},
+        ],
+        cli_path="/tmp/claude",
+        timeout=12,
+    )
+
+    command = kwargs["command"]
+    assert command[command.index("--tools") + 1] == ""
+    assert command.count("--allowedTools") == 1
+    assert command[command.index("--allowedTools") + 1] == ",".join([
+        "mcp__hermes-tools__web_search",
+        "mcp__hermes-tools__browser_snapshot",
+    ])
+
+    mcp_config = json.loads(command[command.index("--mcp-config") + 1])
+    server = mcp_config["mcpServers"]["hermes-tools"]
+    assert server["command"] == sys.executable
+    assert server["args"] == ["-m", "agent.transports.hermes_tools_mcp_server"]
 
 
 def test_build_kwargs_rejects_generic_acp_args():

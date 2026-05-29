@@ -102,6 +102,18 @@ def _strip_provider_prefix(model: str) -> str:
         return suffix
     return model
 
+
+def _is_claude_code_runtime(provider: str = "", base_url: str = "") -> bool:
+    provider_norm = (provider or "").strip().lower()
+    return (
+        provider_norm in _CLAUDE_CODE_PROVIDERS
+        or str(base_url or "").startswith("claude-code://")
+    )
+
+
+def _claude_code_selector_context_length(model: str) -> int | None:
+    return _CLAUDE_CODE_SELECTOR_CONTEXTS.get((model or "").strip().lower())
+
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _novita_metadata_cache: Dict[str, Dict[str, Any]] = {}
@@ -126,6 +138,14 @@ CONTEXT_PROBE_TIERS = [
 
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
+
+CLAUDE_CODE_CONTEXT_LENGTH = 200_000
+_CLAUDE_CODE_PROVIDERS = {"claude-code", "claude_code"}
+_CLAUDE_CODE_SELECTOR_CONTEXTS = {
+    "opus": CLAUDE_CODE_CONTEXT_LENGTH,
+    "sonnet": CLAUDE_CODE_CONTEXT_LENGTH,
+    "haiku": CLAUDE_CODE_CONTEXT_LENGTH,
+}
 
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
@@ -1506,6 +1526,11 @@ def get_model_context_length(
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    if _is_claude_code_runtime(provider, base_url):
+        selector_ctx = _claude_code_selector_context_length(model)
+        if selector_ctx:
+            return selector_ctx
 
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
