@@ -19,6 +19,7 @@ import yaml
 from utils import base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
+from agent.bedrock_metadata import get_bedrock_context_length
 
 logger = logging.getLogger(__name__)
 
@@ -1579,23 +1580,19 @@ def get_model_context_length(
 
     # 1b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels API doesn't expose context window sizes,
-    # so we maintain a curated table in bedrock_adapter.py that reflects
+    # so agent.bedrock_metadata maintains a curated table that reflects
     # AWS-imposed limits (e.g. 200K for Claude models vs 1M on the native
-    # Anthropic API).  This must run BEFORE the custom-endpoint probe at
-    # step 2 — bedrock-runtime.<region>.amazonaws.com is not in
-    # _URL_TO_PROVIDER, so it would otherwise be treated as a custom endpoint,
-    # fail the /models probe (Bedrock doesn't expose that shape), and fall
-    # back to the 128K default before reaching the original step 4b branch.
+    # Anthropic API). This must run BEFORE the custom-endpoint probe at step 2 —
+    # bedrock-runtime.<region>.amazonaws.com is not in _URL_TO_PROVIDER, so it
+    # would otherwise be treated as a custom endpoint, fail the /models probe
+    # (Bedrock doesn't expose that shape), and fall back to the 128K default
+    # before reaching the original step 4b branch.
     if provider == "bedrock" or (
         base_url
         and base_url_hostname(base_url).startswith("bedrock-runtime.")
         and base_url_host_matches(base_url, "amazonaws.com")
     ):
-        try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            return get_bedrock_context_length(model)
-        except ImportError:
-            pass  # boto3 not installed — fall through to generic resolution
+        return get_bedrock_context_length(model)
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)

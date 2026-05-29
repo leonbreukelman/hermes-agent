@@ -530,9 +530,20 @@ class TestRunJobEnvVarCleanup:
             },
         }
 
+        from hermes_cli import runtime_provider
+
+        def fail_runtime_resolution(*args, **kwargs):
+            raise RuntimeError("expected runtime resolution failure")
+
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            fail_runtime_resolution,
+        )
+
         from cron.scheduler import run_job
 
-        # Expect it to fail (no model/API key), but env vars must be cleaned
+        # Expect it to fail in the scheduler try block, but env vars must be cleaned.
         try:
             run_job(job)
         except Exception:

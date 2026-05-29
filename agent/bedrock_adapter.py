@@ -34,6 +34,12 @@ import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.bedrock_metadata import (  # re-exported for compatibility
+    BEDROCK_CONTEXT_LENGTHS,
+    BEDROCK_DEFAULT_CONTEXT_LENGTH,
+    get_bedrock_context_length,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1235,55 +1241,7 @@ def classify_bedrock_error(error_message: str) -> str:
     return "unknown"
 
 
-# ---------------------------------------------------------------------------
-# Bedrock model context lengths
-# ---------------------------------------------------------------------------
-# Static fallback table for models where the Bedrock API doesn't expose
-# context window sizes.  Used by agent/model_metadata.py when dynamic
-# detection is unavailable.
-
-BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
-    "anthropic.claude-sonnet-4-5":   200_000,
-    "anthropic.claude-haiku-4-5":    200_000,
-    "anthropic.claude-opus-4":       200_000,
-    "anthropic.claude-sonnet-4":     200_000,
-    "anthropic.claude-3-5-sonnet":   200_000,
-    "anthropic.claude-3-5-haiku":    200_000,
-    "anthropic.claude-3-opus":       200_000,
-    "anthropic.claude-3-sonnet":     200_000,
-    "anthropic.claude-3-haiku":      200_000,
-    # Amazon Nova
-    "amazon.nova-pro":               300_000,
-    "amazon.nova-lite":              300_000,
-    "amazon.nova-micro":             128_000,
-    # Meta Llama
-    "meta.llama4-maverick":          128_000,
-    "meta.llama4-scout":             128_000,
-    "meta.llama3-3-70b-instruct":    128_000,
-    # Mistral
-    "mistral.mistral-large":         128_000,
-    # DeepSeek
-    "deepseek.v3":                   128_000,
-}
-
-# Default for unknown Bedrock models
-BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
-
-
-def get_bedrock_context_length(model_id: str) -> int:
-    """Look up the context window size for a Bedrock model.
-
-    Uses substring matching so versioned IDs like
-    ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
-    """
-    model_lower = model_id.lower()
-    best_key = ""
-    best_val = BEDROCK_DEFAULT_CONTEXT_LENGTH
-    for key, val in BEDROCK_CONTEXT_LENGTHS.items():
-        if key in model_lower and len(key) > len(best_key):
-            best_key = key
-            best_val = val
-    return best_val
+# Bedrock model context lengths are defined in agent.bedrock_metadata so generic
+# metadata lookups can resolve Bedrock limits without importing this heavy
+# adapter (which may trigger optional boto3 lazy installation). Re-exported
+# names imported above preserve this module's public compatibility.
