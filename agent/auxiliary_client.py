@@ -3108,6 +3108,48 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+_CLAUDE_CODE_LOCAL_SELECTORS = {"opus", "sonnet", "haiku"}
+
+
+def _main_runtime_is_claude_code(main_runtime: Optional[Dict[str, Any]]) -> bool:
+    runtime = _normalize_main_runtime(main_runtime)
+    provider = str(runtime.get("provider") or "").strip().lower()
+    api_mode = str(runtime.get("api_mode") or "").strip().lower()
+    base_url = str(runtime.get("base_url") or "").strip().lower()
+    return (
+        provider in {"claude-code", "claude_code"}
+        or api_mode == "claude_code"
+        or base_url.startswith("claude-code://")
+    )
+
+
+def _is_claude_code_local_selector(model_name: Optional[str]) -> bool:
+    return str(model_name or "").strip().lower() in _CLAUDE_CODE_LOCAL_SELECTORS
+
+
+def _drop_incompatible_auto_model_override(
+    model_name: Optional[str],
+    resolved_model: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True when an auto-route model override cannot be sent to the resolved client."""
+    if not model_name or not resolved_model:
+        return False
+    # Existing guard: OpenRouter-style overrides do not work on non-OpenRouter fallbacks.
+    if "/" in model_name and "/" not in resolved_model:
+        return True
+    # Claude Code aliases are local CLI selectors. If auto-detection falls back
+    # to an API provider, sending bare "opus"/"sonnet"/"haiku" to that provider
+    # produces 400s like "opus is not a valid model ID".
+    if (
+        _main_runtime_is_claude_code(main_runtime)
+        and _is_claude_code_local_selector(model_name)
+        and resolved_model != model_name
+    ):
+        return True
+    return False
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -3243,12 +3285,13 @@ def resolve_provider_client(
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
         # local server), an OpenRouter-formatted model override like
-        # "google/gemini-3-flash-preview" won't work.  Drop it and use
-        # the provider's own default model instead.
-        if model and "/" in model and resolved and "/" not in resolved:
+        # "google/gemini-3-flash-preview" won't work. Likewise, Claude Code
+        # bare selectors ("opus", "sonnet", "haiku") are only valid for the
+        # local CLI transport and must not be forwarded to API fallbacks.
+        if _drop_incompatible_auto_model_override(model, resolved, main_runtime):
             logger.debug(
-                "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
+                "Dropping incompatible auto model override %r for auxiliary "
+                "fallback provider (using %r instead)", model, resolved)
             model = None
         final_model = model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -4364,12 +4407,22 @@ def _get_cached_client(
                 )
                 if loop_ok:
                     effective = _compat_model(cached_client, model, cached_default)
+                    if (
+                        (provider or "").strip().lower() == "auto"
+                        and _drop_incompatible_auto_model_override(model, cached_default, runtime)
+                    ):
+                        effective = cached_default
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
                 _force_close_async_httpx(cached_client)
                 del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
+                if (
+                    (provider or "").strip().lower() == "auto"
+                    and _drop_incompatible_auto_model_override(model, cached_default, runtime)
+                ):
+                    effective = cached_default
                 return cached_client, effective
     # Build outside the lock.
     # For pool-backed api_key providers, derive the active API key from the
@@ -4409,6 +4462,11 @@ def _get_cached_client(
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
+    if (
+        (provider or "").strip().lower() == "auto"
+        and _drop_incompatible_auto_model_override(model, default_model, runtime)
+    ):
+        return client, default_model
     return client, model or default_model
 
 

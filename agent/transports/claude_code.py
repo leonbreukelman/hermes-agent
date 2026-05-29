@@ -14,6 +14,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -163,13 +164,67 @@ class ClaudeCodeTransport(ProviderTransport):
         }
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> str:
-        """Disable Claude Code's own tools for this minimal bridge.
+        """Disable Claude Code's built-in tools for this bridge.
 
-        Hermes tool-call bridging requires a richer protocol than print-mode
-        JSON result output. Passing an empty tools list prevents Claude Code
-        from using local filesystem/shell tools behind Hermes' back.
+        Hermes exposes a curated subset of its native tools through a strict
+        stdio MCP server.  Claude Code's own filesystem/shell tools stay
+        disabled so the Hermes permission/tool boundary remains authoritative.
         """
         return ""
+
+    def _extract_supported_hermes_tool_names(self, tools: List[Dict[str, Any]]) -> list[str]:
+        if not tools:
+            return []
+        try:
+            from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        except Exception:
+            return []
+        exposed = set(EXPOSED_TOOLS)
+        names: list[str] = []
+        seen: set[str] = set()
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function") if tool.get("type") == "function" else None
+            if not isinstance(fn, dict):
+                continue
+            name = str(fn.get("name") or "").strip()
+            if name and name in exposed and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+    def _hermes_tools_mcp_config(self) -> str:
+        env: dict[str, str] = {
+            "HERMES_QUIET": "1",
+            "HERMES_REDACT_SECRETS": os.environ.get("HERMES_REDACT_SECRETS", "true"),
+        }
+        hermes_home = os.environ.get("HERMES_HOME")
+        if hermes_home:
+            env["HERMES_HOME"] = hermes_home
+        pythonpath = os.environ.get("PYTHONPATH")
+        if pythonpath:
+            env["PYTHONPATH"] = pythonpath
+        return json.dumps(
+            {
+                "mcpServers": {
+                    "hermes-tools": {
+                        "command": sys.executable,
+                        "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+                        "env": env,
+                        "startup_timeout_sec": 30.0,
+                        "tool_timeout_sec": 600.0,
+                    }
+                }
+            },
+            separators=(",", ":"),
+        )
+
+    def _allowed_hermes_mcp_tools(self, tools: List[Dict[str, Any]]) -> list[str]:
+        return [
+            f"mcp__hermes-tools__{name}"
+            for name in self._extract_supported_hermes_tool_names(tools)
+        ]
 
     def build_kwargs(
         self,
@@ -198,12 +253,20 @@ class ClaudeCodeTransport(ProviderTransport):
         if model:
             command.extend(["--model", str(model)])
         command.extend(["--output-format", "json"])
+        allowed_hermes_tools = self._allowed_hermes_mcp_tools(tools or [])
+        mcp_config = (
+            self._hermes_tools_mcp_config()
+            if allowed_hermes_tools
+            else _EMPTY_MCP_CONFIG_JSON
+        )
         command.extend([
             "--disable-slash-commands",
             "--strict-mcp-config",
             "--mcp-config",
-            _EMPTY_MCP_CONFIG_JSON,
+            mcp_config,
         ])
+        if allowed_hermes_tools:
+            command.extend(["--allowedTools", ",".join(allowed_hermes_tools)])
         if system_prompt:
             command.extend(["--system-prompt", system_prompt])
         command.extend(["--tools", self.convert_tools(tools or [])])

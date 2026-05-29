@@ -131,11 +131,43 @@ class TestResolveAutoMainFirst:
             side_effect=AssertionError("claude-code aux should not resolve CLI credentials"),
         ), patch(
             "agent.auxiliary_client._get_provider_chain",
-            return_value=[("openrouter", lambda: (chain_client, "google/gemini-3-flash-preview"))],
+            return_value=[
+                ("openrouter", lambda: (chain_client, "google/gemini-3-flash-preview"))
+            ],
         ):
             from agent.auxiliary_client import _resolve_auto
 
             client, model = _resolve_auto()
+
+        assert client is chain_client
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_claude_code_auto_drops_local_selector_for_fallback_client(self):
+        """Auto fallback must not send Claude Code's local selector to another provider."""
+        chain_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="claude-code",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="opus",
+        ), patch(
+            "agent.auxiliary_client._get_provider_chain",
+            return_value=[
+                ("openrouter", lambda: (chain_client, "google/gemini-3-flash-preview"))
+            ],
+        ):
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "auto",
+                model="opus",
+                main_runtime={
+                    "provider": "claude-code",
+                    "model": "opus",
+                    "base_url": "claude-code://local",
+                    "api_key": "",
+                    "api_mode": "claude_code",
+                },
+            )
 
         assert client is chain_client
         assert model == "google/gemini-3-flash-preview"
