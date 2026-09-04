@@ -50,6 +50,7 @@ def test_declares_the_new_field_kinds():
 
     by_key = {f.key: f for f in provider.fields}
     assert by_key["saveMessages"].kind == KIND_BOOL
+    assert by_key["migrateMemoryFiles"].kind == KIND_BOOL
     assert by_key["dialecticMaxChars"].kind == KIND_NUMBER
     assert by_key["userPeerAliases"].kind == KIND_JSON
     assert by_key["recallMode"].allowed_values() == {"hybrid", "context", "tools"}
@@ -85,6 +86,8 @@ def test_root_scoped_fields_are_exactly_the_global_ones():
 
     scopes = {f.key: f.scope for f in provider.fields}
     root_keys = {k for k, scope in scopes.items() if scope == "root"}
-    # baseUrl, timeout and sessions live at the config root in Honcho's schema;
-    # everything else is per-profile host-scoped.
-    assert root_keys == {"baseUrl", "timeout", "sessions"}
+    # Only connection-wide endpoint settings live at the config root;
+    # session mappings and migration policy are profile host-scoped.
+    assert root_keys == {"baseUrl", "timeout"}
+    assert scopes["sessions"] == "host"
+    assert scopes["migrateMemoryFiles"] == "host"

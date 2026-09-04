@@ -529,11 +529,21 @@ class HonchoMemoryProvider(MemoryProvider):
         # each one would flood the backend with short-lived duplicates instead
         # of performing a one-time migration.
         try:
-            if not session.messages and cfg.session_strategy != "per-session":
+            migrate_memory_files = getattr(cfg, "migrate_memory_files", True)
+            if (
+                not session.messages
+                and cfg.session_strategy != "per-session"
+                and migrate_memory_files
+            ):
                 from hermes_constants import get_hermes_home
                 mem_dir = str(get_hermes_home() / "memories")
                 self._manager.migrate_memory_files(self._session_key, mem_dir)
                 logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
+            elif not migrate_memory_files:
+                logger.debug(
+                    "Honcho memory file migration disabled by host policy (%s)",
+                    self._session_key,
+                )
             elif cfg.session_strategy == "per-session":
                 logger.debug(
                     "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",

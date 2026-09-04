@@ -475,6 +475,10 @@ class HonchoClientConfig:
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
+    # One-time upload of profile-local MEMORY.md / USER.md / SOUL.md into a
+    # newly created Honcho session. Shared-user multi-profile installs can
+    # disable this per host so role-local files never become user evidence.
+    migrate_memory_files: bool = True
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
     # True when Honcho was explicitly configured for this host (hosts.hermes
@@ -811,7 +815,12 @@ class HonchoClientConfig:
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
-            sessions=raw.get("sessions", {}),
+            sessions=_parse_string_map(host_block, raw, "sessions"),
+            migrate_memory_files=_resolve_bool(
+                host_block.get("migrateMemoryFiles"),
+                raw.get("migrateMemoryFiles"),
+                default=True,
+            ),
             raw=raw,
             explicitly_configured=_explicitly_configured,
             config_path=path,

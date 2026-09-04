@@ -2,6 +2,128 @@
 
 from types import SimpleNamespace
 import json
+from contextlib import contextmanager
+
+
+class TestHostScopedSessionMappings:
+    def test_map_updates_selected_host_in_shared_file_without_profile_fork(
+            self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        shared = tmp_path / "shared" / "honcho.json"
+        local = tmp_path / "profile" / "honcho.json"
+        shared.parent.mkdir()
+        shared.write_text(json.dumps({
+            "sessions": {"/legacy": "legacy-root"},
+            "hosts": {"hermes_bot": {"aiPeer": "bot"}},
+        }))
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: shared)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: local)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
+
+        honcho_cli.cmd_map(SimpleNamespace(session_name="bot-project-chat"))
+
+        written = json.loads(shared.read_text())
+        assert written["hosts"]["hermes_bot"]["sessions"] == {
+            "/home/agent": "bot-project-chat"
+        }
+        assert written["sessions"] == {"/legacy": "legacy-root"}
+        assert not local.exists()
+
+    def test_sessions_lists_effective_selected_host_map(self, monkeypatch, capsys):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg = {
+            "sessions": {"/legacy": "legacy-root"},
+            "hosts": {
+                "hermes_bot": {"sessions": {"/home/agent": "bot-project-chat"}}
+            },
+        }
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
+
+        honcho_cli.cmd_sessions(SimpleNamespace())
+
+        out = capsys.readouterr().out
+        assert "bot-project-chat" in out
+        assert "legacy-root" not in out
+
+    def test_map_resolves_shared_path_once_and_never_drifts_to_profile_file(
+            self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        shared = tmp_path / "shared" / "honcho.json"
+        local = tmp_path / "profile" / "honcho.json"
+        shared.parent.mkdir()
+        shared.write_text(json.dumps({"hosts": {"hermes_bot": {}}}))
+        calls = []
+
+        def _path_once():
+            calls.append(True)
+            return shared if len(calls) == 1 else local
+
+        monkeypatch.setattr(honcho_cli, "_config_path", _path_once)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: local)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
+
+        honcho_cli.cmd_map(SimpleNamespace(session_name="bot-project-chat"))
+
+        assert len(calls) == 1
+        assert json.loads(shared.read_text())["hosts"]["hermes_bot"]["sessions"] == {
+            "/home/agent": "bot-project-chat"
+        }
+        assert not local.exists()
+
+    def test_map_refuses_to_replace_malformed_existing_shared_config(
+            self, monkeypatch, tmp_path, capsys):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        shared = tmp_path / "honcho.json"
+        malformed = "{not-json"
+        shared.write_text(malformed)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: shared)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
+
+        honcho_cli.cmd_map(SimpleNamespace(session_name="bot-project-chat"))
+
+        assert shared.read_text() == malformed
+        assert "refusing" in capsys.readouterr().out.lower()
+
+    def test_map_rereads_inside_lock_and_preserves_concurrent_update(
+            self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        shared = tmp_path / "honcho.json"
+        shared.write_text(json.dumps({"hosts": {"hermes_bot": {}}}))
+
+        @contextmanager
+        def _concurrent_update_before_lock_yields(path):
+            current = json.loads(path.read_text())
+            current["concurrentSetting"] = "preserve-me"
+            path.write_text(json.dumps(current))
+            yield
+
+        monkeypatch.setattr(
+            honcho_cli,
+            "_config_refresh_lock",
+            _concurrent_update_before_lock_yields,
+            raising=False,
+        )
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: shared)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
+
+        honcho_cli.cmd_map(SimpleNamespace(session_name="bot-project-chat"))
+
+        written = json.loads(shared.read_text())
+        assert written["concurrentSetting"] == "preserve-me"
+        assert written["hosts"]["hermes_bot"]["sessions"] == {
+            "/home/agent": "bot-project-chat"
+        }
 
 
 class TestResolveApiKey:
@@ -272,6 +394,24 @@ class TestCloneHonchoForProfile:
         assert ok is True
         new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["runtimePeerPrefix"] == "telegram_"
+
+    def test_migration_policy_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "migrateMemoryFiles": False,
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
+        assert new_block["migrateMemoryFiles"] is False
 
     def test_legacy_pin_peer_name_migrates_to_canonical_on_clone(self, monkeypatch, tmp_path):
         cfg = {

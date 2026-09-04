@@ -170,7 +170,18 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             description="Explicit session ID overrides keyed by resolver.",
             placeholder='{"key": "session-id"}',
             group="Session",
-            scope="root",
+        ),
+        ProviderField(
+            key="migrateMemoryFiles",
+            label="Migrate local memory files",
+            kind=KIND_BOOL,
+            default="true",
+            description=(
+                "Upload MEMORY.md, USER.md, and SOUL.md once when a new "
+                "Honcho session is created. Disable for profiles that share "
+                "one user peer but keep role-local memory files."
+            ),
+            group="Session",
         ),
         # — Message writing —
         ProviderField(

@@ -3235,6 +3235,11 @@ def cmd_chat(args):
         except OSError as e:
             print(f"Error: cannot enter --in directory {in_dir}: {e}")
             sys.exit(1)
+        # ``--in`` is an explicit workspace selection. A parent Hermes process
+        # can export TERMINAL_CWD for its own tools; if inherited unchanged it
+        # overrides both project-context discovery and child tool routing even
+        # after this chdir. Pin the environment to the same explicit target.
+        os.environ["TERMINAL_CWD"] = _target_dir
         args.no_restore_cwd = True
 
     # --resume latest: keyword for "most recent session" — same resolution
