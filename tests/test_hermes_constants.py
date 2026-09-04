@@ -361,6 +361,54 @@ class TestIsContainer:
         monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
         assert is_container() is True
 
+    def _patch_proc_files(self, monkeypatch, tmp_path, mountinfo):
+        import builtins
+
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(mountinfo)
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/1/cgroup":
+                return real_open(cgroup_file, *args, **kwargs)
+            if path == "/proc/self/mountinfo":
+                return real_open(mountinfo_file, *args, **kwargs)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", fake_open)
+
+    def test_host_running_containers_not_false_positive(self, monkeypatch, tmp_path):
+        """A non-root containerd overlay does not make its host a container."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        self._patch_proc_files(
+            monkeypatch,
+            tmp_path,
+            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime "
+            "shared:247 - overlay overlay rw,lowerdir=/var/lib/containerd/"
+            "io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
+            "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n",
+        )
+
+        assert is_container() is False
+
+    def test_detects_containerd_marker_on_root_mount(self, monkeypatch, tmp_path):
+        """A containerd marker on the root mount still detects a container."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        self._patch_proc_files(
+            monkeypatch,
+            tmp_path,
+            "25 1 0:94 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/"
+            "containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n",
+        )
+
+        assert is_container() is True
+
 
 
     def test_caches_result(self, monkeypatch):
