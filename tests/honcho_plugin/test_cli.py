@@ -93,6 +93,49 @@ class TestHostScopedSessionMappings:
         assert shared.read_text() == malformed
         assert "refusing" in capsys.readouterr().out.lower()
 
+    def test_map_refuses_non_object_hosts_without_writing(
+            self, monkeypatch, tmp_path, capsys):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        shared = tmp_path / "honcho.json"
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: shared)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
+
+        malformed_configs = (
+            {"hosts": "malformed"},
+            {"hosts": []},
+            {"hosts": {"hermes_bot": "malformed"}},
+            {"hosts": {"hermes_bot": []}},
+        )
+        for malformed_config in malformed_configs:
+            before = json.dumps(malformed_config)
+            shared.write_text(before)
+
+            honcho_cli.cmd_map(SimpleNamespace(session_name="bot-project-chat"))
+
+            assert shared.read_text() == before
+            assert "refusing" in capsys.readouterr().out.lower()
+
+    def test_sessions_refuses_non_object_hosts(self, monkeypatch, capsys):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
+        malformed_configs = (
+            {"hosts": "malformed"},
+            {"hosts": []},
+            {"hosts": {"hermes_bot": "malformed"}},
+            {"hosts": {"hermes_bot": []}},
+        )
+        for malformed_config in malformed_configs:
+            monkeypatch.setattr(
+                honcho_cli, "_read_config", lambda value=malformed_config: value
+            )
+
+            honcho_cli.cmd_sessions(SimpleNamespace())
+
+            assert "refusing" in capsys.readouterr().out.lower()
+
     def test_map_rereads_inside_lock_and_preserves_concurrent_update(
             self, monkeypatch, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli

@@ -1309,10 +1309,31 @@ def cmd_peers(args) -> None:
     print()
 
 
+def _host_config_shape_error(cfg: dict, host: str) -> str | None:
+    """Return a controlled error for malformed host configuration shapes."""
+    hosts = cfg.get("hosts")
+    if hosts is None:
+        return None
+    if not isinstance(hosts, dict):
+        return "'hosts' must be an object"
+    keys = [host]
+    if host.startswith("hermes_"):
+        keys.append(f"hermes.{host[len('hermes_'):]}")
+    for key in keys:
+        if key in hosts and not isinstance(hosts[key], dict):
+            return f"host block '{key}' must be an object"
+    return None
+
+
 def cmd_sessions(args) -> None:
     """List known directory → session name mappings."""
     cfg = _read_config()
-    host_block = _host_block(cfg, _host_key())
+    host = _host_key()
+    shape_error = _host_config_shape_error(cfg, host)
+    if shape_error:
+        print(f"  Refusing to read malformed Honcho config: {shape_error}\n")
+        return
+    host_block = _host_block(cfg, host)
     sessions = (
         host_block.get("sessions")
         if "sessions" in host_block
@@ -1373,6 +1394,10 @@ def cmd_map(args) -> None:
             cfg = {}
 
         host = _host_key()
+        shape_error = _host_config_shape_error(cfg, host)
+        if shape_error:
+            print(f"  Refusing to update malformed Honcho config: {shape_error}\n")
+            return
         hosts = cfg.setdefault("hosts", {})
         host_block = _host_block(cfg, host)
         if not host_block:
