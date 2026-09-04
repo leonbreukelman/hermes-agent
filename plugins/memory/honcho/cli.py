@@ -12,6 +12,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.oauth import _config_refresh_lock
 from hermes_cli.config import cfg_get
 
 
@@ -47,7 +48,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
-                "dialecticMaxInputChars", "saveMessages", "observation",
+                "dialecticMaxInputChars", "saveMessages", "migrateMemoryFiles", "observation",
                 "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
         val = default_block.get(key)
         if val is not None:
@@ -117,7 +118,7 @@ def cmd_enable(args) -> None:
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
                     "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
                     "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
-                    "saveMessages", "observation"):
+                    "saveMessages", "migrateMemoryFiles", "observation"):
             val = default_block.get(key)
             if val is not None and key not in block:
                 block[key] = val
@@ -1311,7 +1312,14 @@ def cmd_peers(args) -> None:
 def cmd_sessions(args) -> None:
     """List known directory → session name mappings."""
     cfg = _read_config()
-    sessions = cfg.get("sessions", {})
+    host_block = _host_block(cfg, _host_key())
+    sessions = (
+        host_block.get("sessions")
+        if "sessions" in host_block
+        else cfg.get("sessions", {})
+    )
+    if not isinstance(sessions, dict):
+        sessions = {}
 
     if not sessions:
         print("  No session mappings configured.\n")
@@ -1346,9 +1354,38 @@ def cmd_map(args) -> None:
         print(f"  Session name sanitized to: {sanitized}")
         session_name = sanitized
 
-    cfg = _read_config()
-    cfg.setdefault("sessions", {})[cwd] = session_name
-    _write_config(cfg)
+    # Capture the read/write target once and serialize with OAuth refresh and
+    # other profile processes. Re-read inside the lock so an intervening token
+    # rotation or dashboard save is preserved rather than overwritten.
+    path = _config_path()
+    with _config_refresh_lock(path):
+        if path.exists():
+            try:
+                cfg = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(cfg, dict):
+                    raise ValueError("configuration root is not an object")
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                print(
+                    f"  Refusing to update unreadable Honcho config at {path}: {exc}\n"
+                )
+                return
+        else:
+            cfg = {}
+
+        host = _host_key()
+        hosts = cfg.setdefault("hosts", {})
+        host_block = _host_block(cfg, host)
+        if not host_block:
+            host_block = hosts.setdefault(host, {})
+        sessions = host_block.setdefault("sessions", {})
+        if not isinstance(sessions, dict):
+            sessions = {}
+            host_block["sessions"] = sessions
+        sessions[cwd] = session_name
+        # Write back to the exact file captured above. Named-profile commands
+        # commonly resolve the default profile's shared honcho.json; writing to
+        # $HERMES_HOME would fork credentials and host policy into a stale copy.
+        _write_config(cfg, path=path)
     print(f"  Mapped {cwd}\n     → {session_name}\n")
 
 

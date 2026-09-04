@@ -173,6 +173,72 @@ class TestFromGlobalConfig:
         assert config.workspace_id == "host-ws"
         assert config.ai_peer == "host-ai"
 
+    def test_host_sessions_replace_root_map(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "sessions": {"/shared": "root-session"},
+            "hosts": {
+                "hermes_bot": {
+                    "sessions": {"/shared": "bot-session"},
+                }
+            },
+        }))
+
+        config = HonchoClientConfig.from_global_config(
+            host="hermes_bot", config_path=config_file
+        )
+
+        assert config.sessions == {"/shared": "bot-session"}
+
+    def test_empty_host_sessions_suppresses_root_map(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "sessions": {"/shared": "root-session"},
+            "hosts": {"hermes_bot": {"sessions": {}}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(
+            host="hermes_bot", config_path=config_file
+        )
+
+        assert config.sessions == {}
+
+    def test_missing_host_sessions_falls_back_to_root_map(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "sessions": {"/shared": "root-session"},
+            "hosts": {"hermes_bot": {}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(
+            host="hermes_bot", config_path=config_file
+        )
+
+        assert config.sessions == {"/shared": "root-session"}
+
+    def test_migrate_memory_files_is_host_scoped_and_defaults_true(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "migrateMemoryFiles": True,
+            "hosts": {"hermes_bot": {"migrateMemoryFiles": False}},
+        }))
+
+        bot = HonchoClientConfig.from_global_config(
+            host="hermes_bot", config_path=config_file
+        )
+        other = HonchoClientConfig.from_global_config(
+            host="hermes_other", config_path=config_file
+        )
+        default = HonchoClientConfig()
+
+        assert bot.migrate_memory_files is False
+        assert other.migrate_memory_files is True
+        assert default.migrate_memory_files is True
+
 
     def test_context_tokens_explicit_sets_cap(self, tmp_path):
         """Explicit contextTokens in config sets the cap."""
@@ -254,6 +320,18 @@ class TestResolveSessionName:
     def test_manual_override(self):
         config = HonchoClientConfig(sessions={"/home/user/proj": "custom-session"})
         assert config.resolve_session_name("/home/user/proj") == "custom-session"
+
+    def test_manual_override_beats_bot_title_and_physical_session_id(self):
+        config = HonchoClientConfig(
+            session_strategy="per-directory",
+            sessions={"/home/user": "bot-work-chat"},
+        )
+
+        assert config.resolve_session_name(
+            "/home/user",
+            session_title="Bot Chat",
+            session_id="compression-child-id",
+        ) == "bot-work-chat"
 
     def test_derive_from_dirname(self):
         config = HonchoClientConfig()

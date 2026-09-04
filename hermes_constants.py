@@ -1677,10 +1677,18 @@ def is_container() -> bool:
     # paths), so scan mountinfo as a last resort.
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            # Local patch (agent-node02, 2026-08-23; upstream #58135 / PR #58141):
+            # only inspect the root ("/") mount entry. On a Docker host the
+            # overlay mounts of *running containers* also carry
+            # "containerd" in their options, which made every host with a
+            # live container look like a container.
+            for line in f:
+                fields = line.split()
+                if len(fields) > 4 and fields[4] == "/":
+                    if any(marker in line for marker in ("kubepods", "containerd", "crio")):
+                        _container_detected = True
+                        return True
+                    break
     except OSError:
         pass
     _container_detected = False

@@ -388,6 +388,38 @@ class TestPerSessionMigrateGuard:
         _, mock_manager = self._make_provider_with_strategy("per-session")
         mock_manager.migrate_memory_files.assert_not_called()
 
+    def test_migrate_skipped_when_explicitly_disabled(self):
+        """Host policy can prevent profile-local memory upload to a shared peer."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch, MagicMock
+
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            enabled=True,
+            recall_mode="tools",
+            init_on_session_start=True,
+            session_strategy="per-directory",
+            migrate_memory_files=False,
+        )
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+
+        mock_manager.migrate_memory_files.assert_not_called()
+
+    def test_migrate_remains_enabled_by_default(self):
+        """Existing installations retain one-time migration unless they opt out."""
+        _, mock_manager = self._make_provider_with_strategy("per-directory")
+        mock_manager.migrate_memory_files.assert_called_once()
+
 
 class TestChunkMessage:
     def test_short_message_single_chunk(self):
