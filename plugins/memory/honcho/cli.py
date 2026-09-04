@@ -1311,9 +1311,9 @@ def cmd_peers(args) -> None:
 
 def _host_config_shape_error(cfg: dict, host: str) -> str | None:
     """Return a controlled error for malformed host configuration shapes."""
-    hosts = cfg.get("hosts")
-    if hosts is None:
+    if "hosts" not in cfg:
         return None
+    hosts = cfg["hosts"]
     if not isinstance(hosts, dict):
         return "'hosts' must be an object"
     keys = [host]

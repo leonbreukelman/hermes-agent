@@ -103,8 +103,10 @@ class TestHostScopedSessionMappings:
         monkeypatch.setattr(honcho_cli.os, "getcwd", lambda: "/home/agent")
 
         malformed_configs = (
+            {"hosts": None},
             {"hosts": "malformed"},
             {"hosts": []},
+            {"hosts": {"hermes_bot": None}},
             {"hosts": {"hermes_bot": "malformed"}},
             {"hosts": {"hermes_bot": []}},
         )
@@ -122,8 +124,10 @@ class TestHostScopedSessionMappings:
 
         monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_bot")
         malformed_configs = (
+            {"hosts": None},
             {"hosts": "malformed"},
             {"hosts": []},
+            {"hosts": {"hermes_bot": None}},
             {"hosts": {"hermes_bot": "malformed"}},
             {"hosts": {"hermes_bot": []}},
         )
