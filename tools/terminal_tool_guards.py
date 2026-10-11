@@ -96,6 +96,29 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\bgunicorn\b",
     r"\bpython(?:3)?\s+-m\s+http\.server\b",
 ))
+# A start that returns at once is not long-lived in the foreground: `docker compose up` with
+# -d/--detach (or --wait, which detaches after the health checks pass), and `systemd-run` without
+# --scope/--wait/--pty/--pipe (a transient unit runs detached). Checked per shell segment, so
+# `docker compose up -d db; docker compose up web` is still redirected.
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;|\n]")
+_COMPOSE_DETACHED_RE = re.compile(r"\bdocker\s+compose\s+up\b.*?(?:\s--detach\b|\s--wait\b|\s-[a-zA-Z]*d[a-zA-Z]*\b)",
+                                  re.IGNORECASE)
+_SYSTEMD_RUN_RE = re.compile(r"^\s*(?:sudo\s+)?systemd-run\b(?P<args>.*)$")
+_SYSTEMD_RUN_ATTACHED_RE = re.compile(r"\s(?:--scope|--wait|--pty|--pipe|-[a-zA-Z]*[tPS][a-zA-Z]*)\b")
+
+
+def _is_detached_start(segment: str) -> bool:
+    if _COMPOSE_DETACHED_RE.search(segment):
+        return True
+    m = _SYSTEMD_RUN_RE.match(segment)
+    return bool(m and not _SYSTEMD_RUN_ATTACHED_RE.search(" " + m.group("args")))
+
+
+def _starts_long_lived_foreground(unquoted: str) -> bool:
+    return any(
+        any(p.search(seg) for p in _LONG_LIVED_FOREGROUND_PATTERNS) and not _is_detached_start(seg)
+        for seg in _SHELL_SEGMENT_SPLIT_RE.split(unquoted)
+    )
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.
 _FOREGROUND_GUIDANCE = (
@@ -113,7 +136,7 @@ _FOREGROUND_GUIDANCE = (
         "for bounded jobs — then run health checks and tests in follow-up terminal calls.",
     ),
     (
-        lambda s: any(p.search(s) for p in _LONG_LIVED_FOREGROUND_PATTERNS),
+        _starts_long_lived_foreground,
         "This foreground command appears to start a long-lived server/watch process. "
         "Run it with background=true, verify readiness (health endpoint/log signal), "
         "then execute tests in a separate command.",
